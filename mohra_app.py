@@ -211,10 +211,9 @@ def interactive_menu():
             else:
                 console.print(f"[red]Story '{query}' not found.[/red]")
         elif choice == "5":
-            launch_chrome_for_automation(
-                port=config.get("remote_debugging_port", 9222),
-                open_url="https://accounts.google.com"
-            )
+            from modules.google_auth import GoogleAuthenticator
+            ga = GoogleAuthenticator(config)
+            ga.launch_and_login(headless=False)
         elif choice == "6":
             config["dry_run"] = not config.get("dry_run", True)
             save_config(config)

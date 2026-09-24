@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "sheet_url": "https://docs.google.com/spreadsheets/d/14Nwv3_w83pvpAE7SqjDi2rMoQezuiCtJ0YCLC_w_2gk/edit?gid=0#gid=0",
     "assigned_to": "Mohra",
     "gmail_account": "mohrawagdy58@gmail.com",
+    "gmail_password": "Mohra7788123",
     "readora_login_url": "https://www.readoralab.com/auth/login",
     "readora_books_url": "https://www.readoralab.com/super_admin/books",
     "readora_email": "super9@test.com",

@@ -141,8 +141,10 @@ class MohraAppGUI:
             self._load_stories_threaded()
 
     def _launch_chrome(self):
-        self.log("[Chrome] Launching Chrome with remote debugging on port 9222...")
-        t = threading.Thread(target=launch_chrome_for_automation, kwargs={"port": 9222}, daemon=True)
+        self.log(f"[Chrome] Launching Chrome for {self.config.get('gmail_account')} and opening Sheet...")
+        from modules.google_auth import GoogleAuthenticator
+        ga = GoogleAuthenticator(self.config)
+        t = threading.Thread(target=ga.launch_and_login, kwargs={"headless": False}, daemon=True)
         t.start()
 
     def _load_stories_threaded(self):

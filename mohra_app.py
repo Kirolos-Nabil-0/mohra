@@ -149,7 +149,12 @@ def run_automation_flow(stories: List[Dict], config: dict):
         client.start_browser()
         client.login()
 
-        for story in stories:
+        dry_run = config.get("dry_run", True)
+        for i, story in enumerate(stories, 1):
+            if not dry_run and progress.is_processed(story["story_name"]):
+                console.print(f"[dim][{i}/{len(stories)}] Skipping '{story['story_name']}' - already completed successfully.[/dim]")
+                continue
+            console.print(f"\n[bold]Processing [{i}/{len(stories)}][/bold]")
             process_single_story(story, config, downloader, progress, client=client)
 
     except KeyboardInterrupt:

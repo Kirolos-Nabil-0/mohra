@@ -33,51 +33,25 @@ class DocxParser:
     @classmethod
     def parse_comprehension_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
         paragraphs = cls.extract_paragraphs(docx_source)
-        
-        # 1. Locate Question Section
-        # Matches headings: "Comprehension Questions", "Multiple-Choice Questions (MCQs)", "MCQs", etc.
-        section_start_regex = re.compile(
-            r"(?:comprehension\s+questions|multiple-choice\s+questions|mcqs?)",
-            re.IGNORECASE
-        )
-        section_end_regex = re.compile(
-            r"^(?:vocabulary\s+quiz|vocab\s+quiz|justification|curriculum\s+alignment|part\s+\d+|chapter\s+\d+)",
-            re.IGNORECASE
-        )
-
-        in_section = False
-        section_lines = []
-        for p in paragraphs:
-            clean = p.strip()
-            if not clean:
-                continue
-            if not in_section:
-                if section_start_regex.search(clean):
-                    in_section = True
-                    continue
-            else:
-                # Stop if next non-question section starts
-                if section_end_regex.search(clean):
-                    break
-                section_lines.append(clean)
-
-        # Fallback: scan whole document for question lines if section heading not matched
-        if not section_lines:
-            for p in paragraphs:
-                if (re.search(r"A[\.\)]\s*.+?\s*B[\.\)]", p) and 
-                    (re.search(r"Answer\s*:\s*[A-D]", p, re.IGNORECASE) or re.search(r"\(correct(?:\s+answer)?\)", p, re.IGNORECASE))):
-                    section_lines.append(p.strip())
 
         questions = []
-        for line in section_lines:
-            # Check if line contains choices A. and B.
-            if not re.search(r"\bA[\.\)]\s*.+?\bB[\.\)]\s*", line):
+        for line in paragraphs:
+            clean = line.strip()
+
+            # Must contain choices A, B, C, D
+            if not re.search(r"\bA[\.\)]\s*.+?\bB[\.\)]\s*.+?\bC[\.\)]\s*.+?\bD[\.\)]\s*", clean):
+                continue
+
+            # Must contain an answer indicator: Answer: X or (Correct answer) / (correct)
+            has_ans_suffix = bool(re.search(r"(?:Answer|Ans)[\s:]*[A-D]\b", clean, re.IGNORECASE))
+            has_correct_tag = bool(re.search(r"\((?:correct(?:\s+answer)?)\)", clean, re.IGNORECASE))
+            if not (has_ans_suffix or has_correct_tag):
                 continue
 
             q_num = len(questions) + 1
 
             # Strip leading Q1., 1., etc.
-            cleaned_line = re.sub(r"^(?:Q\d+[\.\:]|\d+[\.\:])\s*", "", line.strip())
+            cleaned_line = re.sub(r"^(?:Q\d+[\.\:]|\d+[\.\:])\s*", "", clean)
 
             # Regex matching: Question + A + B + C + D
             m = re.search(
@@ -114,9 +88,7 @@ class DocxParser:
                     ans = letter
                     opts[letter] = re.sub(r"\((?:correct(?:\s+answer)?)\)", "", opt_text, flags=re.IGNORECASE).strip()
 
-            # Clean any stray formatting from options
             def format_choice(letter: str, txt: str) -> str:
-                # Remove leading letter if duplicated
                 clean_t = re.sub(r"^[A-Da-d][\.\)]\s*", "", txt.strip()).strip()
                 return f"{letter}. {clean_t}"
 

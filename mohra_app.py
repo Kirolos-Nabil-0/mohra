@@ -123,8 +123,8 @@ def process_single_story(story: Dict, config: dict, downloader: DriveDownloader,
         success = client.edit_questions(questions, dry_run=dry_run)
         if success:
             progress.record_success(story, len(questions), dry_run=dry_run)
-            status_tag = "[YELLOW]DRY-RUN SUCCESS[/YELLOW]" if dry_run else "[GREEN]LIVE SUCCESS[/GREEN]"
-            console.print(f"[bold]{status_tag}:[/bold] Successfully processed '{story_name}'!\n")
+            status_str = "[bold yellow]DRY-RUN SUCCESS[/bold yellow]" if dry_run else "[bold green]LIVE SUCCESS[/bold green]"
+            console.print(f"{status_str}: Successfully processed '{story_name}'!\n")
             return True
         else:
             progress.record_failure(story, "Failed during question editing")

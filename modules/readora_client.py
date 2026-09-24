@@ -118,8 +118,8 @@ class ReadoraClient:
         self.page.wait_for_timeout(2000)
         self.page.wait_for_load_state("networkidle")
 
-        # Inspect cards in main
-        cards = self.page.locator('main a[href*="/super_admin/books/"]')
+        # Inspect book cards in main (excluding edit buttons)
+        cards = self.page.locator('main a:not([href*="/edit"])')
         count = cards.count()
         if count == 0:
             print(f"[ReadoraClient] No search results found for '{clean_title}'.")
@@ -128,17 +128,15 @@ class ReadoraClient:
         titles = []
         for i in range(count):
             txt = cards.nth(i).inner_text().strip()
-            # If text is empty, check img alt or child text
-            if not txt:
-                txt = cards.nth(i).locator("img").get_attribute("alt") or ""
-            titles.append((i, txt))
+            href = cards.nth(i).get_attribute("href") or ""
+            titles.append((i, txt, href))
 
         # Best match
         norm_query = clean_title.lower()
         best_idx = None
         best_score = 0.0
 
-        for idx, t in titles:
+        for idx, t, href in titles:
             norm_t = t.lower()
             if norm_query in norm_t or norm_t in norm_query:
                 best_idx = idx
@@ -150,28 +148,23 @@ class ReadoraClient:
 
         if best_idx is not None:
             matched_title = titles[best_idx][1]
+            matched_href = titles[best_idx][2]
             print(f"[ReadoraClient] Found matching book: '{matched_title}' (Index {best_idx})")
             
-            # Find the corresponding edit button
-            # In the card container:
-            matched_card = cards.nth(best_idx).locator("..")
-            edit_btn = matched_card.locator('button[aria-label="edit-book"]')
-            if not edit_btn.is_visible():
-                edit_btn = self.page.locator('button[aria-label="edit-book"]').nth(best_idx)
+            edit_url = f"https://www.readoralab.com{matched_href}/edit" if matched_href.startswith("/") else f"https://www.readoralab.com/super_admin/books/{matched_href}/edit"
 
             return {
                 "matched_title": matched_title,
                 "card_index": best_idx,
-                "edit_button": edit_btn
+                "edit_url": edit_url
             }
 
         return None
 
     def open_book_edit(self, book_info: Dict) -> bool:
-        print("[ReadoraClient] Navigating to book edit page...")
-        edit_btn = book_info["edit_button"]
-        edit_btn.click()
-        self.page.wait_for_url("**/edit", timeout=15000)
+        edit_url = book_info.get("edit_url")
+        print(f"[ReadoraClient] Navigating to book edit page: {edit_url}")
+        self.page.goto(edit_url, timeout=25000)
         self.page.wait_for_load_state("networkidle")
         print(f"[ReadoraClient] Opened edit page: {self.page.url}")
         return True
@@ -209,13 +202,17 @@ class ReadoraClient:
         existing_delete_btns = modal_form.locator('form button[aria-label="deleteQuestion"]')
         existing_count = existing_delete_btns.count()
         if existing_count > 0:
-            print(f"[ReadoraClient] Found {existing_count} existing questions. Deleting...")
-            # Click delete button while existing questions remain
-            for i in range(existing_count):
-                btn = modal_form.locator('form button[aria-label="deleteQuestion"]').first
-                if btn.is_visible():
-                    btn.click()
-                    self.page.wait_for_timeout(200)
+            print(f"[ReadoraClient] Found {existing_count} existing questions. Deleting with confirmation...")
+            while True:
+                del_btn = modal_form.locator('form button[aria-label="deleteQuestion"]').first
+                if not del_btn.is_visible():
+                    break
+                del_btn.click()
+                self.page.wait_for_timeout(300)
+                confirm_btn = self.page.locator('button:has-text("CONFIRM")').first
+                if confirm_btn.is_visible():
+                    confirm_btn.click()
+                    self.page.wait_for_timeout(400)
 
         # 4. Add each question
         print(f"[ReadoraClient] Adding {len(questions)} MCQ questions...")
@@ -265,8 +262,13 @@ class ReadoraClient:
         else:
             print("\n[ReadoraClient] Saving questions: Clicking 'UPDATE' button...")
             update_btn = modal_form.locator('button:has-text("UPDATE")').first
+            update_btn.scroll_into_view_if_needed()
             update_btn.click()
-            self.page.wait_for_timeout(2000)
+            try:
+                modal_form.wait_for(state="hidden", timeout=12000)
+            except Exception:
+                pass
+            self.page.wait_for_timeout(1500)
             self.page.wait_for_load_state("networkidle")
             print("[ReadoraClient] Questions saved successfully!")
             return True

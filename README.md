@@ -97,6 +97,16 @@ The app includes a fully automated, silent update engine:
 4. **Configuration Protection**:
    - Your local `config.json` (passwords, preferences) and `progress.json` are **never overwritten** during an update.
 
+### Linking Your GitHub Repository (One-time):
+To connect the app to your GitHub repository so it pulls your updates:
+```bash
+git remote add origin <YOUR_GITHUB_REPO_URL>
+git push -u origin main
+```
+From that moment on:
+- Whenever you push new code to GitHub (`git push`), the app on the Windows PC will **automatically pull the update silently**, sync dependencies, and restart itself in the background!
+- Your local credentials in `config.json` and tracking state in `progress.json` are in `.gitignore` and **will never be touched or cause merge conflicts**.
+
 ### Manual Update Triggers:
 - **From System Tray**: Right-click the Mohra icon near your clock and click **⚡ Check for Updates**.
 - **From Batch Script**: Double-click `update.bat`.

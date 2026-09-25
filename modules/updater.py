@@ -102,6 +102,7 @@ class AutoUpdater:
     def __init__(self, config: dict):
         self.config = config
         self.repo = config.get("github_repo", "Kirolos-Nabil-0/mohra")
+        self.github_token = config.get("github_token") or os.getenv("GITHUB_TOKEN") or os.getenv("MOHRA_GITHUB_TOKEN", "")
         self.is_git_repo = (BASE_DIR / ".git").exists()
         self.is_frozen = getattr(sys, "frozen", False)
 
@@ -133,13 +134,14 @@ class AutoUpdater:
             log_updater(f"Checking GitHub Releases for '{self.repo}' (Current: v{curr_ver_str})...")
             try:
                 api_url = f"https://api.github.com/repos/{self.repo}/releases/latest"
-                req = urllib.request.Request(
-                    api_url,
-                    headers={
-                        "User-Agent": "MohraAutoUpdater/1.0",
-                        "Accept": "application/vnd.github.v3+json"
-                    }
-                )
+                req_headers = {
+                    "User-Agent": "MohraAutoUpdater/1.0",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+                if self.github_token:
+                    req_headers["Authorization"] = f"Bearer {self.github_token}"
+
+                req = urllib.request.Request(api_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=12) as resp:
                     rel_data = json.loads(resp.read().decode("utf-8"))
                     tag = rel_data.get("tag_name", "")
@@ -180,7 +182,10 @@ class AutoUpdater:
         if self.repo:
             try:
                 raw_url = f"https://raw.githubusercontent.com/{self.repo}/main/version.json"
-                req = urllib.request.Request(raw_url, headers={"User-Agent": "MohraAutoUpdater/1.0"})
+                req_headers = {"User-Agent": "MohraAutoUpdater/1.0"}
+                if self.github_token:
+                    req_headers["Authorization"] = f"Bearer {self.github_token}"
+                req = urllib.request.Request(raw_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     raw_data = json.loads(resp.read().decode("utf-8"))
                     remote_raw_str = raw_data.get("version", "")
@@ -217,7 +222,13 @@ class AutoUpdater:
         """Downloads a remote file with progress reporting."""
         target_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "MohraAutoUpdater/1.0"})
+            req_headers = {"User-Agent": "MohraAutoUpdater/1.0"}
+            if self.github_token:
+                req_headers["Authorization"] = f"Bearer {self.github_token}"
+                if "api.github.com" in url:
+                    req_headers["Accept"] = "application/octet-stream"
+
+            req = urllib.request.Request(url, headers=req_headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 total_bytes = int(resp.headers.get("content-length", 0))
                 downloaded = 0

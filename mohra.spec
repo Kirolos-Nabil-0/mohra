@@ -19,6 +19,8 @@ datas = [
     ('version.json', '.'),
     ('assets', 'assets'),
 ]
+if os.path.exists('config.json'):
+    datas.append(('config.json', '.'))
 datas += ttk_datas + playwright_datas + docx_datas + openpyxl_datas
 
 binaries = [] + ttk_binaries + playwright_binaries + docx_binaries + openpyxl_binaries

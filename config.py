@@ -62,11 +62,15 @@ DEFAULT_CONFIG = {
 
 def load_config() -> dict:
     with _CONFIG_LOCK:
-        example_path = get_bundle_resource("config.example.json")
-        if not CONFIG_PATH.exists() and example_path.exists():
+        config_bundle = get_bundle_resource("config.json")
+        example_bundle = get_bundle_resource("config.example.json")
+        if not CONFIG_PATH.exists():
             try:
                 import shutil
-                shutil.copyfile(example_path, CONFIG_PATH)
+                if config_bundle.exists() and config_bundle.resolve() != CONFIG_PATH.resolve():
+                    shutil.copyfile(config_bundle, CONFIG_PATH)
+                elif example_bundle.exists() and example_bundle.resolve() != CONFIG_PATH.resolve():
+                    shutil.copyfile(example_bundle, CONFIG_PATH)
             except Exception:
                 pass
 

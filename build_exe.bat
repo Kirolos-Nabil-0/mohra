@@ -47,7 +47,9 @@ if not exist "dist\Mohra\logs" mkdir "dist\Mohra\logs"
 if not exist "dist\Mohra\cache" mkdir "dist\Mohra\cache"
 if not exist "dist\Mohra\chrome_profile" mkdir "dist\Mohra\chrome_profile"
 
-if not exist "dist\Mohra\config.json" (
+if exist "config.json" (
+    copy /y "config.json" "dist\Mohra\config.json" >nul
+) else if not exist "dist\Mohra\config.json" (
     if exist "dist\Mohra\config.example.json" (
         copy /y "dist\Mohra\config.example.json" "dist\Mohra\config.json" >nul
     ) else (

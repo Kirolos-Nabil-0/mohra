@@ -11,7 +11,6 @@ env/
 # Local logs and progress tracking
 logs/
 progress.json
-config.json
 *.log
 
 # Local cache & downloaded docx files

@@ -879,14 +879,22 @@ class MohraAppGUI:
             btn_test.config(text="⏳ Testing...", state=tk.DISABLED)
             def worker():
                 try:
-                    from groq import Groq
-                    client = Groq(api_key=k, timeout=8.0)
-                    resp = client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
-                        messages=[{"role": "user", "content": "ping"}],
-                        max_tokens=2
-                    )
-                    dlg.after(0, lambda: messagebox.showinfo("Success", "✅ Groq API Key is valid and working!", parent=dlg))
+                    import requests
+                    headers = {"Authorization": f"Bearer {k}", "Content-Type": "application/json"}
+                    r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10.0)
+                    if r.status_code == 200:
+                        data = r.json()
+                        models = [m.get("id") for m in data.get("data", []) if not m.get("id", "").startswith("whisper")]
+                        sample = ", ".join(models[:3]) if models else "Standard models"
+                        dlg.after(0, lambda: messagebox.showinfo(
+                            "Success",
+                            f"✅ Groq API Key is valid and working!\n\nAccessible Models ({len(models)}):\n{sample}...",
+                            parent=dlg
+                        ))
+                    elif r.status_code == 401:
+                        dlg.after(0, lambda: messagebox.showerror("Connection Failed", "Invalid Groq API key (401 Unauthorized).\nPlease check the key and try again.", parent=dlg))
+                    else:
+                        dlg.after(0, lambda: messagebox.showerror("Connection Failed", f"Groq API returned status {r.status_code}:\n{r.text}", parent=dlg))
                 except Exception as e:
                     err_msg = str(e)
                     dlg.after(0, lambda msg=err_msg: messagebox.showerror("Connection Failed", f"Groq API Error:\n{msg}", parent=dlg))

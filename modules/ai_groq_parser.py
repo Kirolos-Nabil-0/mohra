@@ -26,7 +26,7 @@ except ImportError:
 class GroqAnswerResolver:
     @staticmethod
     def is_available() -> bool:
-        return GROQ_AVAILABLE
+        return True
 
     @staticmethod
     def get_api_key(config: Optional[dict] = None) -> Optional[str]:
@@ -135,13 +135,6 @@ class GroqAnswerResolver:
                 "questions": questions
             }
 
-        if not GROQ_AVAILABLE:
-            return {
-                "success": False,
-                "error": "The 'groq' python package is not installed.",
-                "questions": questions
-            }
-
         styled_doc = cls.extract_rich_styled_text(docx_source)
         if not styled_doc:
             return {
@@ -150,8 +143,7 @@ class GroqAnswerResolver:
                 "questions": questions
             }
 
-        model_name = (config or {}).get("groq_model", "llama-3.3-70b-versatile")
-        client = Groq(api_key=api_key)
+        model_name = (config or {}).get("groq_model", "qwen/qwen3.8-27b")
 
         # Build prompt showing questions and full docx text
         q_summary = []
@@ -176,7 +168,7 @@ class GroqAnswerResolver:
             '      "confidence": "high",\n'
             '      "source": "Found in footer: Answers: 1 is b"\n'
             '    }\n'
-            "  ]\n"
+            '  ]\n'
             "}"
         )
 
@@ -186,19 +178,76 @@ class GroqAnswerResolver:
             f"Resolve the exact correct answer key (A, B, C, or D) for each of the {len(questions)} questions."
         )
 
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=2048,
-            )
+        content = None
+        used_model = model_name
+        models_to_try = [model_name]
+        for fallback in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
 
-            content = response.choices[0].message.content
+        last_error = ""
+        for m in models_to_try:
+            try:
+                if GROQ_AVAILABLE:
+                    client = Groq(api_key=api_key)
+                    response = client.chat.completions.create(
+                        model=m,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.1,
+                        max_tokens=2048,
+                    )
+                    content = response.choices[0].message.content
+                    used_model = m
+                    break
+                else:
+                    import requests
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "model": m,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.1,
+                        "max_tokens": 2048
+                    }
+                    resp = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=30.0
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["choices"][0]["message"]["content"]
+                        used_model = m
+                        break
+                    elif resp.status_code == 404:
+                        last_error = resp.text
+                        continue
+                    else:
+                        last_error = f"HTTP {resp.status_code}: {resp.text}"
+                        break
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        if not content:
+            return {
+                "success": False,
+                "error": f"Groq API call failed: {last_error}",
+                "questions": questions
+            }
+
+        try:
             parsed_json = json.loads(content)
             resolved_list = parsed_json.get("resolved_answers", [])
 

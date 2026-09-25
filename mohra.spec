@@ -12,6 +12,10 @@ ttk_datas, ttk_binaries, ttk_hidden = collect_all('ttkbootstrap')
 playwright_datas, playwright_binaries, playwright_hidden = collect_all('playwright')
 docx_datas, docx_binaries, docx_hidden = collect_all('docx')
 openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all('openpyxl')
+try:
+    groq_datas, groq_binaries, groq_hidden = collect_all('groq')
+except Exception:
+    groq_datas, groq_binaries, groq_hidden = [], [], ['groq']
 
 # Project datas
 datas = [
@@ -21,9 +25,9 @@ datas = [
 ]
 if os.path.exists('config.json'):
     datas.append(('config.json', '.'))
-datas += ttk_datas + playwright_datas + docx_datas + openpyxl_datas
+datas += ttk_datas + playwright_datas + docx_datas + openpyxl_datas + groq_datas
 
-binaries = [] + ttk_binaries + playwright_binaries + docx_binaries + openpyxl_binaries
+binaries = [] + ttk_binaries + playwright_binaries + docx_binaries + openpyxl_binaries + groq_binaries
 
 hiddenimports = [
     'playwright',
@@ -46,7 +50,8 @@ hiddenimports = [
     'PIL',
     'PIL.Image',
     'PIL.ImageDraw',
-] + ttk_hidden + playwright_hidden + docx_hidden + openpyxl_hidden + collect_submodules('modules')
+    'groq',
+] + ttk_hidden + playwright_hidden + docx_hidden + openpyxl_hidden + groq_hidden + collect_submodules('modules')
 
 # Deduplicate
 hiddenimports = list(dict.fromkeys(hiddenimports))

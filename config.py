@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "groq_api_key": "",
-    "groq_model": "llama-3.3-70b-versatile"
+    "groq_model": "qwen/qwen3.8-27b"
 }
 
 def load_config() -> dict:

@@ -35,5 +35,5 @@
   "telegram_bot_token": "8996227771:AAE0sLlWwvnmLh6noKCi_Ecwk6nyioHalnA",
   "telegram_chat_id": "8931330674",
   "groq_api_key": "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",
-  "groq_model": "llama-3.3-70b-versatile"
+  "groq_model": "qwen/qwen3.8-27b"
 }

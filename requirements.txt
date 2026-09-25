@@ -8,5 +8,6 @@ Pillow>=10.0.0
 pynput>=1.7.6
 cryptography>=42.0.0
 ttkbootstrap>=1.10.0
+groq>=0.11.0
 pyinstaller>=6.3.0
 

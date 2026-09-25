@@ -37,16 +37,20 @@ def auto_detect_downloads_sheet() -> Optional[Path]:
     return None
 
 class SheetParser:
-    def __init__(self, sheet_url: str = "", assigned_to: str = "Mohra", cache_dir: str = "./cache", local_file_path: Optional[str] = None):
+    def __init__(self, sheet_url: str = "", assigned_to: str = "Mohra", cache_dir: str = "./cache", local_file_path: Optional[str] = None, sheet_source: str = "url"):
         self.sheet_url = sheet_url
         self.assigned_to = assigned_to.strip().lower()
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Check custom path, then auto-detected Downloads, then cache fallback
+        self.sheet_source = sheet_source
+
+        # Check custom path, then sheet_source, then cache fallback
         if local_file_path and Path(local_file_path).exists():
             self.xlsx_path = Path(local_file_path)
             self.source_type = "custom_local"
+        elif self.sheet_source == "url" and self.sheet_url:
+            self.xlsx_path = self.cache_dir / "latest_sheet.xlsx"
+            self.source_type = "google_sheet_url"
         else:
             downloaded = auto_detect_downloads_sheet()
             if downloaded and downloaded.exists():
@@ -54,7 +58,7 @@ class SheetParser:
                 self.source_type = "downloads_folder"
             else:
                 self.xlsx_path = self.cache_dir / "latest_sheet.xlsx"
-                self.source_type = "cache"
+                self.source_type = "google_sheet_url" if self.sheet_url else "cache"
 
     def download_sheet(self, force_refresh: bool = False) -> Path:
         if not self.sheet_url:
@@ -77,11 +81,25 @@ class SheetParser:
             with open(dest, "wb") as f:
                 f.write(content)
         self.xlsx_path = dest
-        self.source_type = "downloaded_export"
+        self.source_type = "google_sheet_url"
         return self.xlsx_path
 
     def parse_stories(self, force_download: bool = False) -> List[Dict]:
-        if force_download or not self.xlsx_path or not self.xlsx_path.exists():
+        should_download = force_download or not self.xlsx_path or not self.xlsx_path.exists()
+        if should_download and self.sheet_url:
+            try:
+                self.download_sheet(force_refresh=True)
+            except Exception as e:
+                if self.xlsx_path and self.xlsx_path.exists():
+                    pass
+                else:
+                    downloaded = auto_detect_downloads_sheet()
+                    if downloaded and downloaded.exists():
+                        self.xlsx_path = downloaded
+                        self.source_type = "downloads_folder"
+                    else:
+                        raise e
+        elif should_download:
             self.download_sheet(force_refresh=True)
 
         stories = []

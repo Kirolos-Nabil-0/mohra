@@ -13,6 +13,11 @@ class ReadoraClient:
         self.page: Optional[Page] = None
 
     def start_browser(self):
+        try:
+            from modules.browser_installer import ensure_playwright_chromium
+            ensure_playwright_chromium()
+        except Exception:
+            pass
         self.playwright = sync_playwright().start()
         port = self.config.get("remote_debugging_port", 9222)
         chrome_mode = self.config.get("chrome_mode", "auto")
@@ -169,6 +174,110 @@ class ReadoraClient:
         print(f"[ReadoraClient] Opened edit page: {self.page.url}")
         return True
 
+    def extract_current_modal_state(self, modal_form) -> Dict[str, Any]:
+        """Extracts the existing header, content type, and questions from an open Edit Bulk Question modal."""
+        header = ""
+        try:
+            header_input = modal_form.locator('input[type="text"]').first
+            if header_input.is_visible():
+                header = header_input.input_value().strip()
+        except Exception:
+            pass
+
+        content_type = ""
+        try:
+            content_type_select = modal_form.locator('.MuiSelect-select').first
+            if content_type_select.is_visible():
+                content_type = content_type_select.inner_text().strip()
+        except Exception:
+            pass
+
+        questions = []
+        try:
+            q_forms = modal_form.locator('form:has(button[aria-label="deleteQuestion"])')
+            count = q_forms.count()
+            for i in range(count):
+                q_form = q_forms.nth(i)
+                text_inputs = q_form.locator('input[type="text"]')
+                t_count = text_inputs.count()
+                rubric = text_inputs.first.input_value().strip() if t_count > 0 else ""
+
+                checkboxes = q_form.locator('input[type="checkbox"]:not(.MuiSwitch-input)')
+                cb_count = checkboxes.count()
+
+                choices = []
+                ans = ""
+                for c_idx in range(1, t_count):
+                    letter = chr(65 + c_idx - 1)
+                    c_text = text_inputs.nth(c_idx).input_value().strip()
+                    is_chk = False
+                    if c_idx - 1 < cb_count:
+                        try:
+                            is_chk = checkboxes.nth(c_idx - 1).is_checked()
+                        except Exception:
+                            pass
+                    if is_chk:
+                        ans = letter
+                    choices.append({"letter": letter, "text": c_text, "correct": is_chk})
+
+                questions.append({
+                    "num": i + 1,
+                    "question": rubric,
+                    "raw_question": rubric,
+                    "choices": choices,
+                    "answer": ans
+                })
+        except Exception as e:
+            print(f"[ReadoraClient] Warning extracting existing questions: {e}")
+
+        return {
+            "header": header,
+            "content_type": content_type,
+            "questions": questions,
+            "total_questions": len(questions)
+        }
+
+    def fetch_existing_questions(self, story_name: str) -> Dict[str, Any]:
+        """
+        Navigates to Readora Lab, finds the book, opens the question modal,
+        reads the current questions and header, then cancels safely.
+        Returns the extracted old state.
+        """
+        if not self.page:
+            self.start_browser()
+        self.login()
+
+        book_info = self.search_book(story_name)
+        if not book_info:
+            return {
+                "success": False,
+                "error": f"Book '{story_name}' not found on Readora Lab."
+            }
+
+        self.open_book_edit(book_info)
+
+        print("[ReadoraClient] Opening 'Edit Questions' dialog to inspect current state...")
+        edit_q_btn = self.page.locator('button:has-text("EDIT QUESTIONS"), button:has-text("Edit Questions")').first
+        edit_q_btn.wait_for(state="visible", timeout=10000)
+        edit_q_btn.click()
+
+        modal_form = self.page.locator('.MuiModal-root form, form:has(h6:has-text("Edit Bulk Question"))').first
+        modal_form.wait_for(state="visible", timeout=10000)
+
+        old_state = self.extract_current_modal_state(modal_form)
+        print(f"[ReadoraClient] Successfully read {len(old_state['questions'])} existing questions from Readora.")
+
+        # Close modal safely
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+
+        return {
+            "success": True,
+            "story_name": story_name,
+            "matched_title": book_info.get("matched_title"),
+            "old_state": old_state
+        }
+
     def edit_questions(self, questions: List[Dict], dry_run: bool = True) -> bool:
         print(f"[ReadoraClient] Opening 'Edit Questions' dialog ({len(questions)} questions to apply)...")
         edit_q_btn = self.page.locator('button:has-text("EDIT QUESTIONS"), button:has-text("Edit Questions")').first
@@ -178,6 +287,10 @@ class ReadoraClient:
         # Wait for modal form
         modal_form = self.page.locator('.MuiModal-root form, form:has(h6:has-text("Edit Bulk Question"))').first
         modal_form.wait_for(state="visible", timeout=10000)
+
+        # 0. Extract current state before making any modifications
+        self.last_extracted_old_state = self.extract_current_modal_state(modal_form)
+        print(f"[ReadoraClient] Current Readora state: {len(self.last_extracted_old_state['questions'])} existing questions.")
 
         # 1. Fill Question Header
         header_text = self.config.get("question_header", "Choose the correct answer ")

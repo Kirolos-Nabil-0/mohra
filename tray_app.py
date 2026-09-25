@@ -1,12 +1,12 @@
 import sys
 import os
-import threading
 import subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 from config import load_config, save_config
 from background_service import BackgroundService
+from modules.threading_manager import ThreadManager
 
 def create_tray_image():
     # Generate a clean 64x64 icon with a book / letter 'M' icon
@@ -17,34 +17,37 @@ def create_tray_image():
     # Circle background (Cyan / Deep blue)
     dc.ellipse([4, 4, 60, 60], fill=(0, 168, 204, 255), outline=(255, 255, 255, 255), width=2)
     # Draw an 'M' in the center
-    # M shape
     points = [(16, 44), (16, 20), (32, 34), (48, 20), (48, 44)]
     dc.line(points, fill=(255, 255, 255, 255), width=4)
     return image
 
 class TrayApplication:
     def __init__(self):
+        self.manager = ThreadManager.get_instance()
         self.service = BackgroundService()
-        self.worker_thread = None
         self.icon = None
 
     def start(self):
-        # Start background worker loop in separate daemon thread
-        self.worker_thread = threading.Thread(target=self.service.run_forever, daemon=True)
-        self.worker_thread.start()
+        # Start background workers via the BackgroundService
+        self.service.start()
 
         try:
             import pystray
             from pystray import MenuItem as item, Menu
 
-            cfg = load_config()
-            mode_text = "Dry-Run: ON (Safe)" if cfg.get("dry_run", True) else "Live Mode: ON"
-
             def on_process_now(icon, item):
-                threading.Thread(target=self.service.process_pending_stories, daemon=True).start()
+                self.service.process_pending_stories(blocking=False)
+
+            def on_run_key(icon, item):
+                self.service.run_key_module(blocking=False)
+
+            def on_stop_tasks(icon, item):
+                active = self.manager.list_active()
+                for w in active:
+                    if "Automation" in w.name or "Key" in w.name:
+                        w.stop()
 
             def on_open_gui(icon, item):
-                # Launch GUI in separate process
                 python_exe = sys.executable
                 gui_path = str(Path(__file__).parent / "gui.py")
                 subprocess.Popen([python_exe, gui_path])
@@ -66,17 +69,20 @@ class TrayApplication:
 
             def on_check_update(icon, item):
                 def update_worker():
-                    self.service.updater.config = load_config()
-                    self.service.updater.check_and_apply_update_silently()
-                threading.Thread(target=update_worker, daemon=True).start()
+                    from modules.updater import AutoUpdater
+                    updater = AutoUpdater(load_config())
+                    updater.check_and_apply_update_silently()
+                self.manager.submit_task(update_worker, name="ManualUpdateCheckTask")
 
             def on_exit(icon, item):
                 self.service.stop()
                 icon.stop()
 
             menu = Menu(
-                item("Mohra Automation (Running)", lambda icon, item: None, enabled=False),
-                item("🔄 Check & Process Now", on_process_now),
+                item("Mohra Automation (Active)", lambda icon, item: None, enabled=False),
+                item("🔄 Process Pending Stories Now", on_process_now),
+                item("🔑 Run 'key' Module Now", on_run_key),
+                item("⏹ Stop Current Automation", on_stop_tasks),
                 item("⚡ Check for Updates", on_check_update),
                 item("🖥️ Open GUI Dashboard", on_open_gui),
                 item("📝 View Activity Logs", on_open_log),
@@ -84,15 +90,15 @@ class TrayApplication:
                 item("❌ Exit", on_exit)
             )
 
-            self.icon = pystray.Icon("MohraApp", create_tray_image(), "Mohra App Automation (Active)", menu)
+            self.icon = pystray.Icon("MohraApp", create_tray_image(), "Mohra App Automation", menu)
             self.icon.run()
 
         except Exception as e:
             print(f"[Tray] Pystray/GUI not available ({e}). Running in pure console background mode.")
-            # Keep main thread alive
             try:
                 while self.service.running:
-                    self.worker_thread.join(timeout=1.0)
+                    import time
+                    time.sleep(1.0)
             except KeyboardInterrupt:
                 self.service.stop()
 

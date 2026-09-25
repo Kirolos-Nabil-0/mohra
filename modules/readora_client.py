@@ -14,7 +14,8 @@ class ReadoraClient:
 
     def start_browser(self):
         try:
-            from modules.browser_installer import ensure_playwright_chromium
+            from modules.browser_installer import ensure_playwright_chromium, init_playwright_env
+            init_playwright_env()
             ensure_playwright_chromium()
         except Exception:
             pass
@@ -36,22 +37,49 @@ class ReadoraClient:
                 if chrome_mode == "existing_chrome":
                     raise ConnectionError(f"Could not connect to Chrome on port {port}. Please ensure Chrome is running.")
 
-        # 2. Launch persistent context or standard browser
+        # 2. Launch persistent context (try installed Chrome, Edge, then bundled Chromium)
         profile_dir = self.config.get("chrome_profile_dir", "./chrome_profile")
-        try:
-            self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=headless,
-                slow_mo=slow_mo,
-                args=["--no-first-run", "--no-default-browser-check"]
-            )
-            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-            print("[ReadoraClient] Launched browser with persistent profile.")
-        except Exception as e:
-            print(f"[ReadoraClient] Fallback to standard Chromium launch: {e}")
-            self.browser = self.playwright.chromium.launch(headless=headless, slow_mo=slow_mo)
-            self.context = self.browser.new_context()
-            self.page = self.context.new_page()
+        channels_to_try = ["chrome", "msedge", None]
+        last_error = None
+
+        for ch in channels_to_try:
+            try:
+                kwargs = {
+                    "user_data_dir": profile_dir,
+                    "headless": headless,
+                    "slow_mo": slow_mo,
+                    "args": ["--no-first-run", "--no-default-browser-check"]
+                }
+                if ch:
+                    kwargs["channel"] = ch
+                self.context = self.playwright.chromium.launch_persistent_context(**kwargs)
+                self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+                print(f"[ReadoraClient] Launched browser with persistent profile (channel={ch or 'chromium'}).")
+                return
+            except Exception as e:
+                last_error = e
+                print(f"[ReadoraClient] Channel {ch} persistent launch failed: {e}")
+
+        # 3. Fallback to standard launch
+        for ch in channels_to_try:
+            try:
+                kwargs = {
+                    "headless": headless,
+                    "slow_mo": slow_mo
+                }
+                if ch:
+                    kwargs["channel"] = ch
+                self.browser = self.playwright.chromium.launch(**kwargs)
+                self.context = self.browser.new_context()
+                self.page = self.context.new_page()
+                print(f"[ReadoraClient] Launched standard browser (channel={ch or 'chromium'}).")
+                return
+            except Exception as e:
+                last_error = e
+                print(f"[ReadoraClient] Channel {ch} standard launch failed: {e}")
+
+        if last_error:
+            raise last_error
 
     def close(self):
         try:

@@ -11,6 +11,8 @@ import ttkbootstrap as tbs
 from ttkbootstrap.constants import *
 
 from config import load_config, save_config
+from modules.browser_installer import init_playwright_env
+init_playwright_env()
 from modules.sheet_parser import SheetParser
 from modules.drive_downloader import DriveDownloader
 from modules.docx_parser import DocxParser

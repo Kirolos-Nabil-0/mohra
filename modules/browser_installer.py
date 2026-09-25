@@ -3,35 +3,72 @@ Automatic Playwright Browser Installer & Verifier for Mohra
 Ensures Playwright's Chromium browser is installed, including when running inside a frozen executable (.exe).
 """
 
+import os
 import sys
 import subprocess
 from pathlib import Path
 
 
+def init_playwright_env():
+    """Ensures Playwright writes and looks for browsers in user's writable AppData folder."""
+    if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+        if sys.platform == "win32":
+            local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(Path(local_app_data) / "ms-playwright")
+        else:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(Path.home() / ".cache" / "ms-playwright")
+
+
+# Ensure environment variable is set as early as module load
+init_playwright_env()
+
+
 def ensure_playwright_chromium() -> bool:
     """
-    Checks if Playwright Chromium browser is present.
-    If not installed, attempts automatic installation and returns True on success.
+    Checks if a usable browser is present (system Chrome, system Edge, or standalone Chromium).
+    If none are installed, attempts automatic installation and returns True on success.
     """
+    init_playwright_env()
+
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
+            # 1. Quick check: Is installed Google Chrome available?
+            try:
+                b = p.chromium.launch(channel="chrome", headless=True)
+                b.close()
+                return True
+            except Exception:
+                pass
+
+            # 2. Quick check: Is installed Microsoft Edge available?
+            try:
+                b = p.chromium.launch(channel="msedge", headless=True)
+                b.close()
+                return True
+            except Exception:
+                pass
+
+            # 3. Check standalone Chromium binary
             exe_path = p.chromium.executable_path
             if exe_path and Path(exe_path).exists():
                 return True
     except Exception:
-        # Chromium not yet installed or playwright failed to find binary
         pass
 
-    print("[Playwright] Chromium browser not found. Installing Chromium (one-time setup)...")
+    print("[Playwright] No suitable browser found. Installing Chromium into user folder...")
 
     # Strategy 1: Use Playwright bundled driver executable (works inside PyInstaller .exe)
     try:
         from playwright._impl._driver import compute_driver_executable, get_driver_env
         driver_executable, driver_cli = compute_driver_executable()
+        env = get_driver_env()
+        if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
+            env["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+
         res = subprocess.run(
             [str(driver_executable), str(driver_cli), "install", "chromium"],
-            env=get_driver_env(),
+            env=env,
             capture_output=True,
             text=True
         )
@@ -47,6 +84,7 @@ def ensure_playwright_chromium() -> bool:
     try:
         res = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
+            env=os.environ.copy(),
             capture_output=True,
             text=True
         )

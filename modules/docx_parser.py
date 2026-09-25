@@ -1,8 +1,9 @@
+from __future__ import annotations
 import re
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Any
 
 class DocxParser:
     @staticmethod

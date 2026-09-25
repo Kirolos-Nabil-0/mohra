@@ -1,8 +1,10 @@
+from __future__ import annotations
 import sys
 import json
 import queue
 import threading
 from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple, Callable
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import ttkbootstrap as tbs

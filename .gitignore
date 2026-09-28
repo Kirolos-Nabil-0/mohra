@@ -12,7 +12,6 @@ env/
 logs/
 progress.json
 *.log
-config.json
 
 # Local cache & downloaded docx files
 cache/

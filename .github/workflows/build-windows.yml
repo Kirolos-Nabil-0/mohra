@@ -63,7 +63,7 @@ jobs:
           if (!(Test-Path "dist\Mohra\logs")) { New-Item -ItemType Directory -Path "dist\Mohra\logs" }
           if (!(Test-Path "dist\Mohra\cache")) { New-Item -ItemType Directory -Path "dist\Mohra\cache" }
           if (!(Test-Path "dist\Mohra\chrome_profile")) { New-Item -ItemType Directory -Path "dist\Mohra\chrome_profile" }
-          Copy-Item "config.example.json" -Destination "dist\Mohra\config.json" -Force
+          Copy-Item "config.json" -Destination "dist\Mohra\config.json" -Force
 
       - name: Package Standalone ZIP
         run: |

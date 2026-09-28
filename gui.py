@@ -696,12 +696,31 @@ class MohraAppGUI:
 
     def _load_stories_threaded(self):
         def worker_func():
-            self.log("[Sheet] Loading stories from sheet...")
-            self.all_stories = self.sheet_parser.parse_stories()
-            done_count = sum(1 for s in self.all_stories if s["is_done"])
-            pending_count = len(self.all_stories) - done_count
-            self.log(f"[Sheet] Loaded {len(self.all_stories)} stories ({pending_count} pending, {done_count} completed).")
-            self.root.after(0, self._filter_stories)
+            refresh_from_google = self.sheet_parser.source_type == "google_sheet_url"
+            action = "Syncing the latest workbook" if refresh_from_google else "Loading workbook"
+            self.log(f"[Sheet] {action} and reading every worksheet...")
+            try:
+                self.all_stories = self.sheet_parser.parse_stories(force_download=refresh_from_google)
+                done_count = sum(1 for s in self.all_stories if s["is_done"])
+                pending_count = len(self.all_stories) - done_count
+                summary = self.sheet_parser.last_parse_summary
+                worksheet_names = ", ".join(summary["worksheets"]) or "none"
+                if self.sheet_parser.last_refresh_error:
+                    self.log(
+                        f"[Sheet] Refresh failed; displaying fallback workbook "
+                        f"{self.sheet_parser.xlsx_path.name}: "
+                        f"{self.sheet_parser.last_refresh_error}",
+                        level="ERROR",
+                    )
+                self.log(
+                    f"[Sheet] Read {len(summary['worksheets'])} worksheets "
+                    f"({summary['rows_scanned']} rows); loaded {len(self.all_stories)} stories "
+                    f"assigned to {self.sheet_parser.assigned_to.title()} "
+                    f"({pending_count} pending, {done_count} completed). Tabs: {worksheet_names}."
+                )
+                self.root.after(0, self._filter_stories)
+            except Exception as e:
+                self.log(f"[Sheet] Workbook load failed: {e}", level="ERROR")
 
         self.manager.submit_task(worker_func, name="LoadStoriesTask")
 

@@ -1,4 +1,5 @@
 import re
+import posixpath
 import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
@@ -43,6 +44,12 @@ class SheetParser:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.sheet_source = sheet_source
+        self.last_parse_summary = {
+            "worksheets": [],
+            "rows_scanned": 0,
+            "stories_loaded": 0,
+        }
+        self.last_refresh_error = None
 
         # Check custom path, then sheet_source, then cache fallback
         if local_file_path and Path(local_file_path).exists():
@@ -85,11 +92,13 @@ class SheetParser:
         return self.xlsx_path
 
     def parse_stories(self, force_download: bool = False) -> List[Dict]:
+        self.last_refresh_error = None
         should_download = force_download or not self.xlsx_path or not self.xlsx_path.exists()
         if should_download and self.sheet_url:
             try:
                 self.download_sheet(force_refresh=True)
             except Exception as e:
+                self.last_refresh_error = str(e)
                 if self.xlsx_path and self.xlsx_path.exists():
                     pass
                 else:
@@ -120,7 +129,7 @@ class SheetParser:
             for s in wb_root.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet"):
                 s_name = s.attrib.get("name", "Sheet")
                 r_id = s.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", "")
-                sheet_map[r_id] = s_name
+                sheet_map[r_id] = {"name": s_name, "state": s.attrib.get("state", "visible")}
 
             # 3. Parse workbook rels to map rId to xml filename
             rels_map = {}
@@ -128,7 +137,10 @@ class SheetParser:
                 wb_rels_xml = z.read("xl/_rels/workbook.xml.rels")
                 wb_rels_root = ET.fromstring(wb_rels_xml)
                 for r in wb_rels_root:
-                    rels_map[r.attrib["Id"]] = r.attrib.get("Target", "")
+                    rels_map[r.attrib["Id"]] = {
+                        "target": r.attrib.get("Target", ""),
+                        "type": r.attrib.get("Type", ""),
+                    }
 
             # 4. Iterate over sheets
             ns = {
@@ -136,14 +148,26 @@ class SheetParser:
                 "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
             }
 
-            for r_id, s_name in sheet_map.items():
-                target_rel = rels_map.get(r_id, "")
-                if not target_rel:
+            worksheets = []
+            rows_scanned = 0
+            for r_id, sheet in sheet_map.items():
+                relationship = rels_map.get(r_id)
+                if relationship is None:
+                    raise ValueError(f"Workbook sheet '{sheet['name']}' has no relationship entry.")
+                target_rel = relationship.get("target", "")
+                if not target_rel or not relationship.get("type", "").endswith("/worksheet"):
                     continue
-                # normalize path
-                sheet_file = f"xl/{target_rel.lstrip('/')}"
+                # Worksheet relationship targets are relative to xl/ unless
+                # they are package-absolute paths beginning with /xl/.
+                target_path = target_rel.lstrip("/")
+                if not target_path.startswith("xl/"):
+                    target_path = posixpath.join("xl", target_path)
+                sheet_file = posixpath.normpath(target_path)
                 if sheet_file not in z.namelist():
-                    continue
+                    raise ValueError(
+                        f"Workbook worksheet '{sheet['name']}' points to missing file '{sheet_file}'."
+                    )
+                worksheets.append(sheet["name"])
 
                 # Parse hyperlinks for this sheet
                 sheet_rels_file = sheet_file.replace("worksheets/", "worksheets/_rels/") + ".rels"
@@ -164,6 +188,7 @@ class SheetParser:
                 # Parse rows
                 header_cols = {}
                 for row in s_root.findall(".//s:row", ns):
+                    rows_scanned += 1
                     r_idx = int(row.attrib["r"])
                     cols = {}
                     for c in row.findall("s:c", ns):
@@ -172,8 +197,23 @@ class SheetParser:
                         t = c.attrib.get("t")
                         v = c.find("s:v", ns)
                         val = ""
-                        if v is not None and v.text is not None:
-                            val = shared_strings[int(v.text)] if t == "s" and int(v.text) < len(shared_strings) else v.text
+                        if t == "inlineStr":
+                            inline = c.find("s:is", ns)
+                            if inline is not None:
+                                val = "".join(
+                                    text.text or ""
+                                    for text in inline.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")
+                                )
+                        elif v is not None and v.text is not None:
+                            if t == "s":
+                                shared_index = int(v.text)
+                                if shared_index < 0 or shared_index >= len(shared_strings):
+                                    raise ValueError(
+                                        f"Invalid shared-string index {shared_index} in {sheet_file}!{cell_ref}."
+                                    )
+                                val = shared_strings[shared_index]
+                            else:
+                                val = v.text
                         cols[col_letter] = (val.strip(), hyperlinks.get(cell_ref, ""))
 
                     # Header detection
@@ -201,7 +241,7 @@ class SheetParser:
                         clean_story_name = re.sub(r"\s+", " ", clean_story_name)
 
                         stories.append({
-                            "sheet_name": s_name,
+                            "sheet_name": sheet["name"],
                             "row_index": r_idx,
                             "story_name": clean_story_name,
                             "raw_story_name": story_val,
@@ -211,6 +251,12 @@ class SheetParser:
                             "drive_url": drive_url,
                             "folder_id": folder_id
                         })
+
+            self.last_parse_summary = {
+                "worksheets": worksheets,
+                "rows_scanned": rows_scanned,
+                "stories_loaded": len(stories),
+            }
 
         return stories
 

@@ -346,6 +346,8 @@ class AutoUpdater:
             # On macOS / Linux
             try:
                 for item in extract_folder.iterdir():
+                    if item.name in {"config.json", "progress.json"} and (BASE_DIR / item.name).exists():
+                        continue
                     dst = BASE_DIR / item.name
                     if item.is_dir():
                         shutil.copytree(item, dst, dirs_exist_ok=True)
@@ -379,6 +381,9 @@ set "SOURCE={update_folder}"
 set "DEST={BASE_DIR}"
 
 echo [Updater] Copying updated files to %DEST%...
+:: Keep the installed configuration and progress during a ZIP update.
+if exist "%DEST%\config.json" if exist "%SOURCE%\config.json" del /q "%SOURCE%\config.json"
+if exist "%DEST%\progress.json" if exist "%SOURCE%\progress.json" del /q "%SOURCE%\progress.json"
 :: Copy updated files and folders
 xcopy /s /e /y /q "%SOURCE%\\*" "%DEST%\\" >nul
 

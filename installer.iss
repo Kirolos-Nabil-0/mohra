@@ -31,7 +31,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\Mohra\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\Mohra\*"; DestDir: "{app}"; Excludes: "config.json,progress.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\Mohra\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

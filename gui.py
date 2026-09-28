@@ -255,7 +255,7 @@ class MohraAppGUI:
         self.search_entry.pack(side=tk.LEFT, padx=(0, 12))
 
         tbs.Label(action_frame, text="Filter:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-        self.filter_var = tk.StringVar(value="Pending Only")
+        self.filter_var = tk.StringVar(value="All Stories")
         filter_cb = tbs.Combobox(
             action_frame, textvariable=self.filter_var,
             values=["Pending Only", "All Stories", "Completed Only"],
@@ -300,7 +300,7 @@ class MohraAppGUI:
         tree_frame = tbs.Frame(self.root, padding=(0, 4))
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=0)
 
-        columns = ("grade", "row", "story", "status", "has_drive")
+        columns = ("grade", "row", "story", "assigned_to", "status", "has_drive")
         self.tree = tbs.Treeview(
             tree_frame, columns=columns, show="headings",
             selectmode="browse", bootstyle="dark"
@@ -308,14 +308,16 @@ class MohraAppGUI:
         self.tree.heading("grade", text="Grade / Sheet")
         self.tree.heading("row", text="Row")
         self.tree.heading("story", text="Story Title")
+        self.tree.heading("assigned_to", text="Assigned To")
         self.tree.heading("status", text="Status / Comment")
         self.tree.heading("has_drive", text="Drive Link")
 
-        self.tree.column("grade", width=110, anchor=tk.CENTER)
-        self.tree.column("row", width=60, anchor=tk.CENTER)
-        self.tree.column("story", width=430)
+        self.tree.column("grade", width=100, anchor=tk.CENTER)
+        self.tree.column("row", width=55, anchor=tk.CENTER)
+        self.tree.column("story", width=330)
+        self.tree.column("assigned_to", width=110, anchor=tk.CENTER)
         self.tree.column("status", width=230)
-        self.tree.column("has_drive", width=90, anchor=tk.CENTER)
+        self.tree.column("has_drive", width=85, anchor=tk.CENTER)
 
         # Row color tags
         self.tree.tag_configure("completed", background="#1a3a22", foreground="#7fffa0")
@@ -510,7 +512,11 @@ class MohraAppGUI:
 
     def _on_sheet_auto_detected(self, sheet_path: Path):
         self.log(f"[SheetWatcher] Fresh sheet detected: {sheet_path.name}. Auto-loading stories...")
-        self.sheet_parser = SheetParser(local_file_path=str(sheet_path))
+        self.sheet_parser = SheetParser(
+            local_file_path=str(sheet_path),
+            assigned_to=self.config.get("assigned_to", "Mohra"),
+            cache_dir=self.config.get("cache_dir", "./cache"),
+        )
         self.root.after(0, lambda: self.sheet_lbl.config(text=f"📄  downloads  ·  {sheet_path.name}"))
         self._load_stories_threaded()
 
@@ -536,7 +542,11 @@ class MohraAppGUI:
             filetypes=[("Excel Files", "*.xlsx"), ("All Files", "*.*")]
         )
         if filepath:
-            self.sheet_parser = SheetParser(local_file_path=filepath)
+            self.sheet_parser = SheetParser(
+                local_file_path=filepath,
+                assigned_to=self.config.get("assigned_to", "Mohra"),
+                cache_dir=self.config.get("cache_dir", "./cache"),
+            )
             self.sheet_lbl.config(text=f"📄  custom  ·  {Path(filepath).name}")
             self._load_stories_threaded()
 
@@ -639,6 +649,8 @@ class MohraAppGUI:
 
     def _mark_story_done_in_sheet(self, story: Dict):
         """Marks Column D of story row as 'Done' in Google Sheet with strict login verification."""
+        if self._warn_if_story_not_assigned_to_current_user(story):
+            return
         story_name = story.get("story_name", "Unknown")
         target_acc = self.config.get("gmail_account", "mohrawagdy58@gmail.com")
         self.log(f"[GoogleSheet] Requesting write-back for '{story_name}' (cell D{story.get('row_index')})...")
@@ -731,6 +743,7 @@ class MohraAppGUI:
                 s["sheet_name"],
                 s["row_index"],
                 s["story_name"],
+                s.get("assigned_to", "").strip() or "Unassigned",
                 status_text,
                 has_link,
             ), tags=(row_tag,))
@@ -757,6 +770,23 @@ class MohraAppGUI:
                 return s
         return None
 
+    def _story_is_assigned_to_current_user(self, story: Dict) -> bool:
+        target = str(self.config.get("assigned_to", "")).strip().lower()
+        assigned_to = str(story.get("assigned_to", "")).strip().lower()
+        return bool(target and assigned_to == target)
+
+    def _warn_if_story_not_assigned_to_current_user(self, story: Dict) -> bool:
+        if self._story_is_assigned_to_current_user(story):
+            return False
+        target = str(self.config.get("assigned_to", "")).strip() or "(not set)"
+        messagebox.showwarning(
+            "Task Not Assigned",
+            f"This task is not assigned to {target}.\n\n"
+            f"Only tasks assigned to {target} can be processed or updated.",
+            parent=self.root,
+        )
+        return True
+
     def _on_story_step_complete(self, story: dict, success: bool, msg: str):
         """Called by worker when a single story finishes to update UI immediately."""
         self.progress_tracker = ProgressTracker()
@@ -767,6 +797,8 @@ class MohraAppGUI:
         target = story or self._get_selected_story()
         if not target:
             messagebox.showwarning("Warning", "Please select a story from the list first.")
+            return
+        if self._warn_if_story_not_assigned_to_current_user(target):
             return
 
         self.log(f"[Review] Opening Dry-Run Review Inspector for '{target['story_name']}'...")
@@ -794,17 +826,21 @@ class MohraAppGUI:
             return
 
         menu = tk.Menu(self.root, tearoff=0)
+        is_assigned = self._story_is_assigned_to_current_user(story)
         menu.add_command(
             label="🔍 Review & Dry-Run (Inspect & Apply)",
-            command=lambda: self._open_dry_run_review(story)
+            command=lambda: self._open_dry_run_review(story),
+            state=tk.NORMAL if is_assigned else tk.DISABLED,
         )
         menu.add_command(
             label="🚀 Accept & Apply Live",
-            command=lambda: self._apply_story_directly(story)
+            command=lambda: self._apply_story_directly(story),
+            state=tk.NORMAL if is_assigned else tk.DISABLED,
         )
         menu.add_command(
             label="📊 Mark Done in Google Sheet",
-            command=lambda: self._mark_story_done_in_sheet(story)
+            command=lambda: self._mark_story_done_in_sheet(story),
+            state=tk.NORMAL if is_assigned else tk.DISABLED,
         )
         menu.add_separator()
         if story.get("drive_url"):
@@ -1013,6 +1049,8 @@ class MohraAppGUI:
         tbs.Button(btn_bar, text="Cancel", bootstyle="secondary-outline", command=dlg.destroy).pack(side=tk.RIGHT, padx=4)
 
     def _apply_story_directly(self, story: Dict):
+        if self._warn_if_story_not_assigned_to_current_user(story):
+            return
         if not messagebox.askyesno("Confirm Live Apply", f"Apply '{story['story_name']}' directly to Readora in LIVE mode?"):
             return
         run_config = self.config.copy()
@@ -1032,6 +1070,8 @@ class MohraAppGUI:
         story = self._get_selected_story()
         if not story:
             messagebox.showwarning("Warning", "Please select a story from the list first.")
+            return
+        if self._warn_if_story_not_assigned_to_current_user(story):
             return
 
         dry_run = self.dry_run_var.get()
@@ -1064,11 +1104,16 @@ class MohraAppGUI:
             sheet_name, row_idx = values[0], int(values[1])
             for s in self.all_stories:
                 if s["sheet_name"] == sheet_name and s["row_index"] == row_idx:
-                    stories_to_run.append(s)
+                    if (
+                        self._story_is_assigned_to_current_user(s)
+                        and not s.get("is_done", False)
+                        and not self.progress_tracker.is_processed(s["story_name"])
+                    ):
+                        stories_to_run.append(s)
                     break
 
         if not stories_to_run:
-            messagebox.showinfo("Info", "No stories match current filter.")
+            messagebox.showinfo("Info", "No pending stories assigned to the configured user match the current filter.")
             return
 
         dry_run = self.dry_run_var.get()

@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union, Any
 
 class DocxParser:
+    VOCAB_HEADING = re.compile(r"^(?:(?:Cambridge\s+EFL|Grade\s+\d+(?:\s*\([^)]*\))?)\s+)?Vocabulary\s+Quiz(?:\s+Questions)?\s*:?$", re.IGNORECASE)
+    COMPREHENSION_HEADING = re.compile(r"^Comprehension\s+Questions\s*:?$", re.IGNORECASE)
+
     @staticmethod
     def extract_paragraphs(docx_source: Union[str, Path, bytes]) -> List[str]:
         paragraphs = []
@@ -34,6 +37,39 @@ class DocxParser:
     @classmethod
     def parse_comprehension_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
         paragraphs = cls.extract_paragraphs(docx_source)
+        vocab_start = next((i for i, line in enumerate(paragraphs) if cls.VOCAB_HEADING.search(line)), len(paragraphs))
+        comprehension_start = next((i for i, line in enumerate(paragraphs[:vocab_start]) if cls.COMPREHENSION_HEADING.search(line)), -1)
+        return cls._parse_questions(paragraphs[comprehension_start + 1:vocab_start])
+
+    @classmethod
+    def has_vocabulary_quiz(cls, docx_source: Union[str, Path, bytes]) -> bool:
+        return any(cls.VOCAB_HEADING.search(line) for line in cls.extract_paragraphs(docx_source))
+
+    @classmethod
+    def parse_vocabulary_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
+        paragraphs = cls.extract_paragraphs(docx_source)
+        start = next((i for i, line in enumerate(paragraphs) if cls.VOCAB_HEADING.search(line)), None)
+        if start is None:
+            return []
+        section = paragraphs[start + 1:]
+        # Some files put a quoted sentence between a numbered question and all
+        # four inline choices. Join only that recognizable three-line layout.
+        merged = []
+        i = 0
+        while i < len(section):
+            if re.match(r"^\d+[.\)]\s*", section[i]):
+                choice_idx = next((j for j in range(i + 1, min(i + 4, len(section)))
+                                   if re.match(r"^A[.\)]\s*", section[j]) and re.search(r"\bD[.\)]\s*", section[j])), None)
+                if choice_idx is not None:
+                    merged.append(" ".join(section[i:choice_idx + 1]))
+                    i = choice_idx + 1
+                    continue
+            merged.append(section[i])
+            i += 1
+        return cls._parse_questions(merged, require_answer=True)
+
+    @classmethod
+    def _parse_questions(cls, paragraphs: List[str], require_answer: bool = False) -> List[Dict]:
         questions = []
         i = 0
         n = len(paragraphs)
@@ -49,11 +85,11 @@ class DocxParser:
             if re.search(r"(?:\s*|\b)A[\.\)]\s*.+?\bB[\.\)]\s*.+?\bC[\.\)]\s*", line):
                 full_text = line
                 # Look ahead: If the immediate next line is "Answer: X", join it
-                if i + 1 < n and re.match(r"^(?:Answer|Ans|Key)[\s:]*[A-D]\b", paragraphs[i + 1].strip(), re.IGNORECASE):
+                if i + 1 < n and re.match(r"^(?:Correct\s+answer|Answer|Ans|Key)[\s:]*[A-D]\b", paragraphs[i + 1].strip(), re.IGNORECASE):
                     full_text = full_text + " " + paragraphs[i + 1].strip()
                     i += 1
 
-                q_obj = cls._parse_single_line_q(full_text, len(questions) + 1)
+                q_obj = cls._parse_single_line_q(full_text, len(questions) + 1, require_answer)
                 if q_obj:
                     questions.append(q_obj)
                 i += 1
@@ -76,10 +112,13 @@ class DocxParser:
                         if re.search(r"\((?:correct(?:\s+answer)?)\)", text, re.IGNORECASE):
                             ans = letter
                             text = re.sub(r"\((?:correct(?:\s+answer)?)\)", "", text, flags=re.IGNORECASE).strip()
+                        if "✅" in text:
+                            ans = letter
+                            text = text.replace("✅", "").strip()
                         choices_dict[letter] = text
                         j += 1
-                    elif re.match(r"^(?:Answer|Ans|Key)[\s:]*([A-D])\b", c_line, re.IGNORECASE):
-                        ans_m = re.match(r"^(?:Answer|Ans|Key)[\s:]*([A-D])\b", c_line, re.IGNORECASE)
+                    elif re.match(r"^(?:Correct\s+answer|Answer|Ans|Key)[\s:]*([A-D])\b", c_line, re.IGNORECASE):
+                        ans_m = re.match(r"^(?:Correct\s+answer|Answer|Ans|Key)[\s:]*([A-D])\b", c_line, re.IGNORECASE)
                         ans = ans_m.group(1).upper()
                         j += 1
                         break
@@ -100,7 +139,7 @@ class DocxParser:
                         "question": f"{q_num}. {raw_q}",
                         "raw_question": raw_q,
                         "choices": choices,
-                        "answer": ans or "A"
+                        "answer": ans if require_answer else (ans or "A")
                     })
                     i = j
                     continue
@@ -110,7 +149,7 @@ class DocxParser:
         return questions
 
     @classmethod
-    def _parse_single_line_q(cls, clean: str, q_num: int) -> Optional[Dict]:
+    def _parse_single_line_q(cls, clean: str, q_num: int, require_answer: bool = False) -> Optional[Dict]:
         cleaned_line = re.sub(r"^(?:Q\d+[\.\:]|\d+[\.\:])\s*", "", clean)
         m = re.search(
             r"^(?P<q>.+?)(?:\s+|\b)A[\.\)]\s*(?P<a>.+?)\s+B[\.\)]\s*(?P<b>.+?)\s+C[\.\)]\s*(?P<c>.+?)(?:\s+D[\.\)]\s*(?P<d>.+))?$",
@@ -132,19 +171,25 @@ class DocxParser:
         ans = None
         # Style 1: Answer: X / Ans: X at the end
         ans_target = opts["D"] or opts["C"]
-        ans_m = re.search(r"(?:Answer|Ans|Key)[\s:]*([A-D])\b", ans_target, re.IGNORECASE)
+        ans_m = re.search(r"(?:Correct\s+answer|Answer|Ans|Key)[\s:]*([A-D])\b", ans_target, re.IGNORECASE)
         if ans_m:
             ans = ans_m.group(1).upper()
             if opts["D"]:
-                opts["D"] = re.sub(r"(?:Answer|Ans|Key)[\s:]*[A-D]\b.*$", "", opts["D"], flags=re.IGNORECASE).strip()
+                opts["D"] = re.sub(r"(?:Correct\s+answer|Answer|Ans|Key)[\s:]*[A-D]\b.*$", "", opts["D"], flags=re.IGNORECASE).strip()
             else:
-                opts["C"] = re.sub(r"(?:Answer|Ans|Key)[\s:]*[A-D]\b.*$", "", opts["C"], flags=re.IGNORECASE).strip()
+                opts["C"] = re.sub(r"(?:Correct\s+answer|Answer|Ans|Key)[\s:]*[A-D]\b.*$", "", opts["C"], flags=re.IGNORECASE).strip()
 
         # Style 2: (Correct answer) or (correct) inside option text
         for letter, opt_text in list(opts.items()):
             if re.search(r"\((?:correct(?:\s+answer)?)\)", opt_text, re.IGNORECASE):
                 ans = letter
                 opts[letter] = re.sub(r"\((?:correct(?:\s+answer)?)\)", "", opt_text, flags=re.IGNORECASE).strip()
+
+        # Style 3: A visible checkmark after the correct option.
+        for letter, opt_text in list(opts.items()):
+            if "✅" in opt_text:
+                ans = letter
+                opts[letter] = opt_text.replace("✅", "").strip()
 
         def format_choice(letter: str, txt: str) -> str:
             clean_t = re.sub(r"^[A-Da-d][\.\)]\s*", "", txt.strip()).strip()
@@ -160,7 +205,7 @@ class DocxParser:
                 {"letter": "C", "text": format_choice("C", opts["C"])},
                 {"letter": "D", "text": format_choice("D", opts["D"])},
             ],
-            "answer": ans or "A"
+            "answer": ans if require_answer else (ans or "A")
         }
 
     @staticmethod

@@ -24,6 +24,47 @@ except ImportError:
 
 
 class GroqAnswerResolver:
+    @classmethod
+    def suggest_first_language_filename(
+        cls, filenames: List[str], config: Optional[dict] = None
+    ) -> Optional[str]:
+        """Suggest a listed filename for human review; never select or download it."""
+        api_key = cls.get_api_key(config)
+        candidates = [name for name in filenames if isinstance(name, str) and name.strip()]
+        if not api_key or not GROQ_AVAILABLE or not candidates:
+            return None
+
+        try:
+            client = Groq(api_key=api_key, timeout=10.0, max_retries=0)
+            response = client.chat.completions.create(
+                model=(config or {}).get("groq_model", "qwen/qwen3.8-27b"),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You help identify a First Language document from filenames only. "
+                            "Return JSON with a single key, filename. Use an exact filename from "
+                            "the list only if it is a plausible First Language file. "
+                            "Never suggest a Second Language file. If uncertain, use null."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=100,
+            )
+            proposed = json.loads(response.choices[0].message.content).get("filename")
+        except Exception:
+            return None
+
+        # The model cannot introduce a filename or override the language guard.
+        if not isinstance(proposed, str) or proposed not in candidates:
+            return None
+        if re.search(r"(?<![a-z])second[ _-]*language(?![a-z])", proposed, re.IGNORECASE):
+            return None
+        return proposed
+
     @staticmethod
     def is_available() -> bool:
         return True

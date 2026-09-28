@@ -29,6 +29,8 @@ from modules.review_service import (
     execute_accept_and_apply
 )
 from modules.ai_groq_parser import GroqAnswerResolver
+from modules.docx_parser import DocxParser
+from modules.gui_drive_file_picker import DriveFilePicker
 from modules.threading_manager import ThreadManager
 from modules.progress import ProgressTracker
 
@@ -48,12 +50,19 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.on_applied = on_applied
 
         self.questions: List[Dict] = []           # New questions (from docx, editable)
+        self.comprehension_questions: List[Dict] = []
+        self.vocab_questions: List[Dict] = []
+        self.vocab_present = False
         self.old_state: Optional[Dict[str, Any]] = None  # Old questions (from Readora Lab)
+        self.old_comprehension_state: Optional[Dict[str, Any]] = None
+        self.old_vocab_state: Optional[Dict[str, Any]] = None
         self.docx_path: Optional[str] = None
         self.selected_q_idx: int = 0
         self.selected_diff_idx: int = 0
         self.is_executing = False
         self._loading_editor = False
+        self._preparation_request = 0
+        self._picker_suggestion = None
 
         story_title = story.get("story_name", "Story")
         self.title(f"🔍 Dry-Run Review & Diff — {story_title}")
@@ -231,6 +240,25 @@ class DryRunReviewDialog(tbs.Toplevel):
             state=tk.DISABLED
         )
         self.btn_open_docx.pack(side=tk.LEFT, padx=3)
+
+        self.btn_choose_docx = tbs.Button(
+            btn_box,
+            text="Choose Drive file",
+            bootstyle="info-outline",
+            command=self._open_drive_file_picker,
+        )
+        self.btn_choose_docx.pack(side=tk.LEFT, padx=3)
+
+        section_bar = tbs.Frame(self, padding=(12, 3))
+        section_bar.pack(fill=tk.X)
+        tbs.Label(section_bar, text="Review section:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        self.section_var = tk.StringVar(value="Comprehension")
+        self.section_picker = ttk.Combobox(section_bar, textvariable=self.section_var,
+                                           values=("Comprehension", "Vocabulary Quiz"), state="readonly", width=22)
+        self.section_picker.pack(side=tk.LEFT)
+        self.section_picker.bind("<<ComboboxSelected>>", self._on_section_changed)
+        self.lbl_vocab_status = tbs.Label(section_bar, text="Vocabulary: loading", bootstyle="secondary")
+        self.lbl_vocab_status.pack(side=tk.LEFT, padx=12)
 
         # ── 3. Notebook Tabs: [Diff (Old vs New)] | [New Editor] | [Old Readora] ──
         self.notebook = ttk.Notebook(self)
@@ -494,16 +522,48 @@ class DryRunReviewDialog(tbs.Toplevel):
     # ══════════════════════════════════════════════════════════════════════════
     def _start_async_preparation(self):
         """Prepares docx parsing and starts background Readora inspection."""
+        self._preparation_request += 1
+        request = self._preparation_request
+        story = self.story.copy()
         def docx_worker():
             res = prepare_story_review(
-                self.story,
+                story,
                 self.config,
                 download_if_missing=True,
                 on_status=lambda msg: self.safe_after(0, self._update_status, msg)
             )
-            self.safe_after(0, self._on_docx_preparation_done, res)
+            self.safe_after(0, self._on_docx_preparation_done, request, res)
 
         threading.Thread(target=docx_worker, daemon=True).start()
+
+    def _open_drive_file_picker(self):
+        drive_url = self.story.get("drive_url")
+        if not drive_url:
+            messagebox.showerror("Drive link missing", "This story has no Google Drive folder link.", parent=self)
+            return
+        DriveFilePicker(
+            self, drive_url, self.story.get("story_name", "Story"),
+            self.config.get("cache_dir", "./cache"), self._on_drive_file_chosen,
+            ai_suggestion=self._picker_suggestion,
+        )
+
+    def _on_drive_file_chosen(self, selection):
+        self.story["selected_drive_file"] = selection
+        self._picker_suggestion = None
+        self.story.pop("docx_path", None)
+        self.questions = []
+        self.comprehension_questions = []
+        self.vocab_questions = []
+        self.vocab_present = False
+        self.docx_path = None
+        self.btn_apply.config(state=tk.DISABLED)
+        self.btn_dry_run_test.config(state=tk.DISABLED)
+        self.btn_open_docx.config(state=tk.DISABLED)
+        self.lbl_new_badge.config(text="Docx: Loading selected file", bootstyle="inverse-primary")
+        self.lbl_status.config(text=f"Loading selected file: {selection['name']}…", bootstyle="info")
+        self.pbar.pack(side=tk.RIGHT)
+        self.pbar.start(10)
+        self._start_async_preparation()
 
     def _fetch_readora_state_async(self):
         """Fetches current questions from Readora Lab in background."""
@@ -524,7 +584,9 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.btn_fetch_readora.config(state=tk.NORMAL, text="🔄 Refresh Readora")
 
         if res.get("success") and "old_state" in res:
-            self.old_state = res["old_state"]
+            self.old_comprehension_state = res["old_state"]
+            self.old_vocab_state = res.get("old_vocab_state")
+            self.old_state = self.old_vocab_state if self.section_var.get() == "Vocabulary Quiz" else self.old_comprehension_state
             old_q_list = self.old_state.get("questions", [])
             old_count = len(old_q_list)
             old_hdr = self.old_state.get("header", "None")
@@ -563,21 +625,38 @@ class DryRunReviewDialog(tbs.Toplevel):
     def _update_status(self, msg: str):
         self.lbl_status.config(text=msg)
 
-    def _on_docx_preparation_done(self, res: Dict[str, Any]):
+    def _on_docx_preparation_done(self, request: int, res: Dict[str, Any]):
+        if request != self._preparation_request:
+            return
         self.pbar.stop()
         self.pbar.pack_forget()
 
         if not res["success"]:
             self.lbl_status.config(text=f"❌ Error: {res.get('error')}", bootstyle="danger")
             self.lbl_new_badge.config(text="Docx Failed", bootstyle="inverse-danger")
-            messagebox.showerror("Error", res.get("error", "Failed to prepare story review."), parent=self)
+            self.btn_apply.config(state=tk.DISABLED)
+            self.btn_dry_run_test.config(state=tk.DISABLED)
+            if res.get("selection_required"):
+                self._picker_suggestion = res.get("ai_suggestion")
+                self._open_drive_file_picker()
+            else:
+                messagebox.showerror("Document error", res.get("error", "Failed to prepare story review."), parent=self)
             return
 
-        self.questions = res["questions"]
+        self.comprehension_questions = res["questions"]
+        self.vocab_questions = res.get("vocab_questions", [])
+        self.vocab_present = res.get("vocab_present", False)
+        self.section_picker.config(values=("Comprehension", "Vocabulary Quiz") if self.vocab_present else ("Comprehension",))
+        if not self.vocab_present:
+            self.section_var.set("Comprehension")
+        self.questions = self.vocab_questions if self.section_var.get() == "Vocabulary Quiz" else self.comprehension_questions
+        self.old_state = self.old_vocab_state if self.section_var.get() == "Vocabulary Quiz" else self.old_comprehension_state
+        self.lbl_vocab_status.config(text=(f"Vocabulary: {len(self.vocab_questions)} questions" if self.vocab_present else "Vocabulary: skipped (section absent)"))
         self.docx_path = res["docx_path"]
+        self.story["docx_path"] = self.docx_path
         self.btn_open_docx.config(state=tk.NORMAL)
 
-        total_q = len(self.questions)
+        total_q = len(self.comprehension_questions)
         if total_q == 0:
             self.lbl_new_badge.config(text="0 Questions", bootstyle="inverse-warning")
             self.lbl_status.config(text="⚠️ No comprehension questions found in docx.", bootstyle="warning")
@@ -594,13 +673,12 @@ class DryRunReviewDialog(tbs.Toplevel):
             text=f"Questions: {total_q} ready to apply  ·  Target Header: «{hdr_setting}»  ·  Type: «None»"
         )
         self.lbl_status.config(
-            text=f"✅ Ready! Docx parsed with {total_q} questions. Review Old vs New comparison below.",
+            text=f"✅ Ready! {res.get('status_msg', 'DOCX loaded')} · {total_q} questions. Review Old vs New below.",
             bootstyle="success"
         )
 
-        self.btn_apply.config(state=tk.NORMAL)
-        self.btn_dry_run_test.config(state=tk.NORMAL)
-        self.btn_ai_resolve.config(state=tk.NORMAL)
+        self._refresh_validation()
+        self.btn_ai_resolve.config(state=tk.NORMAL if self.section_var.get() == "Comprehension" else tk.DISABLED)
 
         # Check if any question is missing answer key
         missing_keys = [q["num"] for q in self.questions if not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"]]
@@ -621,10 +699,50 @@ class DryRunReviewDialog(tbs.Toplevel):
         # Populate trees
         self._populate_questions_tree()
         self._populate_diff_tree()
+        if self.vocab_present and (not self.vocab_questions or not DocxParser.validate_questions(self.vocab_questions)["is_valid"]):
+            self.section_var.set("Vocabulary Quiz")
+            self._on_section_changed()
+            self.lbl_status.config(text="Vocabulary Quiz needs correction before this story can be applied.", bootstyle="warning")
 
         # Automatically start fetching Readora state if not yet fetched
         if self.old_state is None:
             self._fetch_readora_state_async()
+
+    def _on_section_changed(self, _event=None):
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        self.questions = self.vocab_questions if is_vocab else self.comprehension_questions
+        self.old_state = self.old_vocab_state if is_vocab else self.old_comprehension_state
+        self.selected_q_idx = 0
+        self.selected_diff_idx = 0
+        self.btn_ai_resolve.config(state=tk.DISABLED if is_vocab or not self.docx_path else tk.NORMAL)
+        self.lbl_old_badge.config(text=f"Readora: {len((self.old_state or {}).get('questions', []))} {self.section_var.get()} questions")
+        self.lbl_old_summary.config(text=f"{self.section_var.get()}: {len((self.old_state or {}).get('questions', []))} existing questions")
+        self.lbl_new_summary.config(text=f"{self.section_var.get()}: {len(self.questions)} incoming questions")
+        self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} {self.section_var.get()} questions")
+        self.lbl_tab_old_meta.config(text=f"Readora Lab: Current {self.section_var.get()} questions")
+        for item in self.old_tree.get_children():
+            self.old_tree.delete(item)
+        for i, q in enumerate((self.old_state or {}).get("questions", [])):
+            self.old_tree.insert("", tk.END, iid=f"old_{i}", values=(i + 1, q.get("question", ""), f"[{q.get('answer', '')}]"))
+        self._populate_questions_tree()
+        self._populate_diff_tree()
+        if not self.questions:
+            self.txt_q_rubric.delete("1.0", tk.END)
+            for variable in self.choice_vars.values():
+                variable.set("")
+            self.ans_var.set("")
+
+    def _refresh_validation(self):
+        comp = DocxParser.validate_questions(self.comprehension_questions)
+        vocab = DocxParser.validate_questions(self.vocab_questions)
+        valid = bool(self.comprehension_questions) and comp["is_valid"] and (not self.vocab_present or (bool(self.vocab_questions) and vocab["is_valid"]))
+        state = tk.NORMAL if valid and not self.is_executing else tk.DISABLED
+        self.btn_apply.config(state=state)
+        self.btn_dry_run_test.config(state=state)
+        if self.vocab_present and (not self.vocab_questions or not vocab["is_valid"]):
+            self.lbl_vocab_status.config(text="Vocabulary: needs correction", bootstyle="warning")
+        elif self.vocab_present:
+            self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} ready", bootstyle="success")
 
     def _on_ai_resolve_answers(self):
         """Uses Groq AI to detect freeform answer keys or styling-based answers (highlights, underlines, etc.)."""
@@ -666,9 +784,11 @@ class DryRunReviewDialog(tbs.Toplevel):
 
         if res["success"]:
             self.questions = res["questions"]
+            self.comprehension_questions = self.questions
             changes_cnt = res.get("changes_count", 0)
             self._populate_questions_tree()
             self._populate_diff_tree()
+            self._refresh_validation()
 
             if changes_cnt > 0:
                 change_details = "\n".join(f"• Q{c['num']}: {c['old_answer'] or 'None'} ➔ {c['new_answer']} ({c['source']})" for c in res.get("changes", []))
@@ -871,7 +991,7 @@ class DryRunReviewDialog(tbs.Toplevel):
                 if letter in self.choice_vars:
                     self.choice_vars[letter].set(clean_text)
 
-            ans = q.get("answer", "A")
+            ans = q.get("answer") or ""
             self.ans_var.set(ans)
             self.lbl_selected_ans_hint.config(text=f"Selected Correct Answer: Option {ans}")
         finally:
@@ -898,6 +1018,7 @@ class DryRunReviewDialog(tbs.Toplevel):
             t = self.choice_vars[letter].get().strip()
             choices.append({"letter": letter, "text": f"{letter}. {t}"})
         q["choices"] = choices
+        self._refresh_validation()
 
         # Update Treeview row
         snippet = raw_q[:45] + ("..." if len(raw_q) > 45 else "")
@@ -929,14 +1050,19 @@ class DryRunReviewDialog(tbs.Toplevel):
             return
 
         story_name = self.story.get("story_name", "Story")
-        num_q = len(self.questions)
-        old_count = len((self.old_state or {}).get("questions", []))
+        self._refresh_validation()
+        if str(self.btn_apply.cget("state")) == tk.DISABLED:
+            messagebox.showerror("Questions need correction", "Correct all comprehension and vocabulary questions before applying.", parent=self)
+            return
+        num_q = len(self.comprehension_questions)
+        old_count = len((self.old_comprehension_state or {}).get("questions", []))
 
         msg = (
             f"Are you ready to write these changes live to Readora Lab?\n\n"
             f"• Story: {story_name}\n"
             f"• Current Questions on Readora (OLD): {old_count}\n"
             f"• Verified Questions to Write (NEW): {num_q}\n"
+            f"• Vocabulary Quiz: {len(self.vocab_questions) if self.vocab_present else 'Skipped (section absent)'}\n"
             f"• Action: Existing questions will be replaced & answers saved\n\n"
             f"Click 'Yes' to accept and apply immediately."
         )
@@ -954,9 +1080,10 @@ class DryRunReviewDialog(tbs.Toplevel):
         def worker():
             res = execute_accept_and_apply(
                 self.story,
-                self.questions,
+                self.comprehension_questions,
                 self.config,
-                on_status=lambda s: self.safe_after(0, self._update_status, s)
+                on_status=lambda s: self.safe_after(0, self._update_status, s),
+                vocab_questions=self.vocab_questions if self.vocab_present else None,
             )
             self.safe_after(0, self._on_apply_completed, res)
 
@@ -983,6 +1110,7 @@ class DryRunReviewDialog(tbs.Toplevel):
                 "Success",
                 f"Successfully updated '{res.get('story_name')}' on Readora!\n\n"
                 f"• Questions Written: {res.get('questions_count')}\n"
+                f"• Vocabulary Questions Written: {res.get('vocab_questions_count', 0)}\n"
                 f"• Readora Matched Title: {res.get('matched_title')}\n"
                 f"• Status: Marked Completed in Progress Tracker"
                 f"{sheet_info}",
@@ -994,8 +1122,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         else:
             err = res.get("error", "Unknown error")
             self.lbl_status.config(text=f"❌ Failed: {err}", bootstyle="danger")
-            self.btn_apply.config(state=tk.NORMAL)
-            self.btn_dry_run_test.config(state=tk.NORMAL)
+            self._refresh_validation()
             messagebox.showerror("Update Failed", f"Failed to apply to Readora:\n{err}", parent=self)
 
     def _on_test_dry_run_only(self):
@@ -1014,9 +1141,10 @@ class DryRunReviewDialog(tbs.Toplevel):
         def worker():
             res = execute_dry_run_test(
                 self.story,
-                self.questions,
+                self.comprehension_questions,
                 self.config,
-                on_status=lambda s: self.safe_after(0, self._update_status, s)
+                on_status=lambda s: self.safe_after(0, self._update_status, s),
+                vocab_questions=self.vocab_questions if self.vocab_present else None,
             )
             self.safe_after(0, self._on_dry_run_test_completed, res)
 
@@ -1026,17 +1154,17 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.pbar.stop()
         self.pbar.pack_forget()
         self.is_executing = False
-        self.btn_apply.config(state=tk.NORMAL)
-        self.btn_dry_run_test.config(state=tk.NORMAL)
+        self._refresh_validation()
 
         if res["success"]:
             # If old_state was captured during dry-run, store and update
             if "old_state" in res and res["old_state"]:
-                self.old_state = res["old_state"]
+                self.old_comprehension_state = res["old_state"]
+                self.old_vocab_state = res.get("old_vocab_state")
                 self._on_readora_state_fetched(res)
 
-            old_count = len((self.old_state or {}).get("questions", []))
-            new_count = len(self.questions)
+            old_count = len((self.old_comprehension_state or {}).get("questions", []))
+            new_count = len(self.comprehension_questions)
 
             self.lbl_status.config(text="✅ Dry-run test succeeded! (Safe, no changes saved)", bootstyle="success")
             messagebox.showinfo(
@@ -1045,6 +1173,7 @@ class DryRunReviewDialog(tbs.Toplevel):
                 f"• Matched Book on Readora: {res.get('matched_title')}\n"
                 f"• Current Questions on Server (OLD): {old_count}\n"
                 f"• Verified Questions to Apply (NEW): {new_count}\n"
+                f"• Vocabulary Questions Tested: {res.get('vocab_questions_count', 0)}\n"
                 f"• Status: Safe test completed without database writes.\n\n"
                 f"You can now review the Old vs New Diff and click 'Accept & Apply' whenever ready.",
                 parent=self

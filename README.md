@@ -14,25 +14,30 @@ Automated tool designed for **Windows** (and macOS/Linux) to process stories ass
    - Automatically detects when a new or updated Google Sheet (`Data Entry _ Website _ First Language.xlsx`) arrives in your `Downloads` folder!
    - Can also download fresh updates directly via Google Sheets URL.
 3. **Universal Google Drive Docx Downloader**:
-   - Downloads docx files (`First language.docx`, `Second Language.docx`, `New.docx`, etc.) directly in seconds.
+   - Finds a clearly named First language or EFL DOCX/Google Doc in the story's Drive folder or an `OUTPUT` subfolder. If no language label is present, an exact match to the story title in the sheet is used. Google Docs are exported to DOCX for review.
+   - When several files match or none is clear, the review window opens a Drive file browser. Navigate folders and choose the First Language document explicitly; Second Language files cannot be selected.
+   - If no first-language document is clear and a Groq key is configured, AI may suggest a filename to verify in Drive. It does not open the suggestion.
    - Automatically extracts file IDs without manual clicking.
-4. **Intelligent Comprehension Question Parser**:
+4. **Comprehension and Vocabulary Quiz Parser**:
    - Supports **both question formats**:
      - Grade 1 style: `Where does the bear sit? A. ... B. ... Answer: B`
      - Grade 4 style: `Q1. What are props? A. ... B. (Correct answer) ...`
    - Extracts all 10 questions, 4 choices, and exact correct answer cleanly.
+   - Separates Comprehension Questions from Vocabulary Quiz questions, including Cambridge EFL and Grade/CEFR quiz headings. Vocabulary answers must have an explicit key or marked correct choice.
 5. **Readora Lab Web Automation**:
-   - Logs in with credentials (`super9@test.com` / `12345678`).
+   - Logs in using credentials configured locally in `config.json`.
    - Searches for the story book in `/super_admin/books`.
    - Opens the book edit page and clicks **Edit Questions**.
    - Sets Question Header to `"Choose the correct answer "`.
    - Sets Content Type to `"None"`.
    - Clears any previous questions.
    - Inserts all 10 questions with their 4 choices, marks correct answer checkbox, and enables **Auto Corrected** switch.
+   - When a Vocabulary Quiz exists, fills **Edit Vocab Test** after comprehension and verifies both saves before marking the story complete. An absent quiz is shown as skipped.
 6. **Interactive Dry-Run Review & "Accept & Apply"**:
    - Preview exactly what will be changed before committing to Readora Lab.
    - Shows Story Title, Grade, parsed docx questions, choices (A, B, C, D), and correct answer key.
    - Inspect and edit question rubric text or choices directly inside the Review dialog.
+   - Switch between Comprehension and Vocabulary Quiz to review and correct each section before one apply action.
    - Click **`🚀 Accept & Apply to Readora`** to execute the live update with your reviewed questions immediately!
    - Available via:
      - **GUI**: Action button **`🔍 Review & Dry-Run`**, double-clicking any story row, or right-click context menu.
@@ -187,14 +192,14 @@ mohra/
 
 ```json
 {
-  "sheet_url": "https://docs.google.com/spreadsheets/d/14Nwv3_w83pvpAE7SqjDi2rMoQezuiCtJ0YCLC_w_2gk/edit?pli=1&gid=0#gid=0",
+  "sheet_url": "",
   "sheet_source": "url",
   "assigned_to": "Mohra",
   "gmail_account": "mohrawagdy58@gmail.com",
   "readora_login_url": "https://www.readoralab.com/auth/login",
   "readora_books_url": "https://www.readoralab.com/super_admin/books",
-  "readora_email": "super9@test.com",
-  "readora_password": "12345678",
+  "readora_email": "",
+  "readora_password": "",
   "question_header": "Choose the correct answer ",
   "preferred_language_file": "First language",
   "content_type": "None",
@@ -237,4 +242,3 @@ On any Windows PC:
      "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
      ```
    - The installer will be saved to `dist\Installer\Mohra_Setup_v1.0.0.exe`.
-

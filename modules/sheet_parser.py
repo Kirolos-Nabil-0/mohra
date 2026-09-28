@@ -182,12 +182,14 @@ class SheetParser:
                             header_cols[col_k] = col_v.lower().strip()
                         continue
 
-                    # Check assignment
                     assigned_val = cols.get("C", ("", ""))[0]
                     story_val, story_link = cols.get("B", ("", ""))
                     comment_val = cols.get("D", ("", ""))[0]
 
-                    if self.assigned_to in assigned_val.lower():
+                    assignment_matches = bool(
+                        self.assigned_to and self.assigned_to == assigned_val.strip().lower()
+                    )
+                    if story_val.strip() and assignment_matches:
                         drive_url = story_link or ""
                         if not drive_url and "drive.google.com" in story_val:
                             drive_url = story_val

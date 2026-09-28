@@ -63,15 +63,7 @@ jobs:
           if (!(Test-Path "dist\Mohra\logs")) { New-Item -ItemType Directory -Path "dist\Mohra\logs" }
           if (!(Test-Path "dist\Mohra\cache")) { New-Item -ItemType Directory -Path "dist\Mohra\cache" }
           if (!(Test-Path "dist\Mohra\chrome_profile")) { New-Item -ItemType Directory -Path "dist\Mohra\chrome_profile" }
-          if (Test-Path "config.json") {
-            Copy-Item "config.json" -Destination "dist\Mohra\config.json" -Force
-          } elseif (!(Test-Path "dist\Mohra\config.json")) {
-            if (Test-Path "dist\Mohra\config.example.json") {
-              Copy-Item "dist\Mohra\config.example.json" -Destination "dist\Mohra\config.json"
-            } elseif (Test-Path "config.example.json") {
-              Copy-Item "config.example.json" -Destination "dist\Mohra\config.json"
-            }
-          }
+          Copy-Item "config.example.json" -Destination "dist\Mohra\config.json" -Force
 
       - name: Package Standalone ZIP
         run: |

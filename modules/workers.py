@@ -133,13 +133,16 @@ class StoryAutomationWorker(BaseWorker):
             return False
 
         # 1. Download docx (or use pre-loaded path)
-        if story.get("docx_path") and Path(story["docx_path"]).exists():
+        if (story.get("docx_path") and Path(story["docx_path"]).exists()
+                and self.downloader.is_first_language_docx(story["docx_path"])):
             docx_path = Path(story["docx_path"])
             status = "Pre-loaded"
         else:
             pref_lang = self.config.get("preferred_language_file", "First language")
             self.report_progress(base_pct + 2.0, f"[{index}/{total}] Downloading docx for '{story_name}'...")
-            docx_path, status = self.downloader.download_story_docx(drive_url, preferred_lang=pref_lang)
+            docx_path, status = self.downloader.download_story_docx(
+                drive_url, preferred_lang=pref_lang, ai_config=self.config, story_name=story_name
+            )
             self.check_cancellation()
 
         if not docx_path or not docx_path.exists():
@@ -156,7 +159,7 @@ class StoryAutomationWorker(BaseWorker):
             questions = DocxParser.parse_comprehension_questions(docx_path)
 
             # AI Fallback: If 0 questions or missing answers, and Groq available:
-            if not questions and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(self.config):
+            if not questions and not DocxParser.has_vocabulary_quiz(docx_path) and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(self.config):
                 self.log(f"0 questions parsed by rules. Triggering Groq AI full extraction for '{story_name}'...", level="INFO")
                 ai_full = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, self.config)
                 if ai_full.get("success") and ai_full.get("questions"):
@@ -178,6 +181,21 @@ class StoryAutomationWorker(BaseWorker):
                 return False
             self.log(f"Parsed {len(questions)} questions from '{docx_path.name}'")
 
+        vocab_present = DocxParser.has_vocabulary_quiz(docx_path)
+        vocab_questions = DocxParser.parse_vocabulary_questions(docx_path) if vocab_present else []
+        vocab_validation = DocxParser.validate_questions(vocab_questions)
+        comp_validation = DocxParser.validate_questions(questions)
+        if not questions or not comp_validation["is_valid"]:
+            msg = f"Comprehension Questions in {docx_path.name} need correction: {', '.join(comp_validation['issues']) or 'No questions parsed'}"
+            self.log(msg, level="ERROR")
+            self.progress_tracker.record_failure(story, msg)
+            return False
+        if vocab_present and (not vocab_questions or not vocab_validation["is_valid"]):
+            msg = f"Vocabulary Quiz in {docx_path.name} needs correction: {', '.join(vocab_validation['issues']) or 'No questions parsed'}"
+            self.log(msg, level="ERROR")
+            self.progress_tracker.record_failure(story, msg)
+            return False
+
         # 3. Readora Lab interaction
         self.report_progress(base_pct + 8.0, f"[{index}/{total}] Searching book on Readora: '{story_name}'...")
         book_info = self.client.search_book(story_name)
@@ -193,9 +211,16 @@ class StoryAutomationWorker(BaseWorker):
         self.client.open_book_edit(book_info)
         self.check_cancellation()
 
-        success = self.client.edit_questions(questions, dry_run=dry_run)
+        try:
+            success = self.client.edit_questions(questions, dry_run=dry_run)
+            if success and vocab_present:
+                self.report_progress(base_pct + 15.0, f"[{index}/{total}] Editing vocabulary quiz for '{story_name}'...")
+                success = self.client.edit_questions(vocab_questions, dry_run=dry_run, kind="vocabulary")
+        except Exception as exc:
+            success = False
+            self.log(f"Readora update failed for '{story_name}': {exc}", level="ERROR")
         if success:
-            self.progress_tracker.record_success(story, len(questions), dry_run=dry_run)
+            self.progress_tracker.record_success(story, len(questions) + len(vocab_questions), dry_run=dry_run)
             mode_tag = "DRY-RUN SUCCESS" if dry_run else "LIVE SUCCESS"
             self.log(f"[{mode_tag}] Successfully processed '{story_name}'!")
 

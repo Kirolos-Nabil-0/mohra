@@ -7,7 +7,6 @@ inline corrections, and direct "Accept & Apply" live execution.
 
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
-import traceback
 
 from modules.drive_downloader import DriveDownloader
 from modules.docx_parser import DocxParser
@@ -55,13 +54,20 @@ def prepare_story_review(
     status_msg = ""
 
     # Check if story has pre-existing path
-    if story.get("docx_path") and Path(story["docx_path"]).exists():
+    if story.get("selected_drive_file"):
+        docx_path, status_msg = downloader.download_selected_file(story["selected_drive_file"])
+    elif (story.get("docx_path") and Path(story["docx_path"]).exists()
+            and downloader.is_first_language_docx(story["docx_path"])):
         docx_path = Path(story["docx_path"])
         status_msg = "Cached locally"
     elif download_if_missing:
         if on_status:
             on_status(f"Downloading {pref_lang}.docx from Google Drive...")
-        docx_path, status_msg = downloader.download_story_docx(drive_url, preferred_lang=pref_lang)
+        docx_path, status_msg = downloader.download_story_docx(
+            drive_url, preferred_lang=pref_lang, ai_config=config, story_name=story_name
+        )
+    else:
+        status_msg = "First language.docx is not available locally"
 
     if not docx_path or not docx_path.exists():
         return {
@@ -71,6 +77,8 @@ def prepare_story_review(
             "questions": [],
             "validation": {"is_valid": False, "issues": [status_msg], "total_questions": 0},
             "docx_path": None,
+            "selection_required": getattr(downloader, "selection_required", False),
+            "ai_suggestion": getattr(downloader, "ai_suggestion", None),
         }
 
     # 2. Parse questions
@@ -78,8 +86,11 @@ def prepare_story_review(
         on_status("Parsing questions and choices from docx...")
     try:
         questions = DocxParser.parse_comprehension_questions(docx_path)
+        vocab_present = DocxParser.has_vocabulary_quiz(docx_path)
+        vocab_questions = DocxParser.parse_vocabulary_questions(docx_path) if vocab_present else []
     except Exception as e:
-        questions = []
+        return {"success": False, "story": story, "error": f"Could not parse DOCX sections: {e}",
+                "questions": [], "docx_path": str(docx_path)}
 
     # 2.5 Automatic AI Fallback & Self-Healing (Groq)
     # Automatically triggers when:
@@ -89,6 +100,9 @@ def prepare_story_review(
 
     if (len(questions) == 0 or has_missing_keys) and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(config):
         if len(questions) == 0:
+            # A full-document AI extraction can merge the vocabulary quiz into comprehension.
+            if vocab_present:
+                return {"success": False, "story": story, "error": "Comprehension Questions could not be parsed separately from Vocabulary Quiz", "questions": [], "docx_path": str(docx_path)}
             if on_status:
                 on_status("⚡ AI Auto-Worker: Regex found 0 questions. Auto-extracting via Groq AI...")
             ai_extract = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, config)
@@ -106,6 +120,10 @@ def prepare_story_review(
 
     # 3. Validate questions
     validation = DocxParser.validate_questions(questions)
+    vocab_validation = DocxParser.validate_questions(vocab_questions)
+    if vocab_present and not vocab_questions:
+        vocab_validation["is_valid"] = False
+        vocab_validation["issues"].append("Vocabulary Quiz heading found, but no questions were parsed.")
 
     # 4. Review payload
     header_text = config.get("question_header", "Choose the correct answer ")
@@ -118,6 +136,9 @@ def prepare_story_review(
         "status_msg": status_msg,
         "questions": questions,
         "validation": validation,
+        "vocab_present": vocab_present,
+        "vocab_questions": vocab_questions,
+        "vocab_validation": vocab_validation,
         "config_preview": {
             "question_header": header_text,
             "content_type": content_type,
@@ -182,7 +203,8 @@ def execute_dry_run_test(
     story: Dict,
     questions: List[Dict],
     config: dict,
-    on_status: Optional[Callable[[str], None]] = None
+    on_status: Optional[Callable[[str], None]] = None,
+    vocab_questions: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
     """
     Safely executes dry-run validation in browser.
@@ -190,6 +212,8 @@ def execute_dry_run_test(
     and closes without saving (Escape).
     """
     story_name = story.get("story_name", "Unknown")
+    if not questions or not DocxParser.validate_questions(questions)["is_valid"] or (vocab_questions is not None and (not vocab_questions or not DocxParser.validate_questions(vocab_questions)["is_valid"])):
+        return {"success": False, "error": "Comprehension or vocabulary questions need correction before dry run"}
     mgr = ThreadManager.get_instance()
 
     if on_status:
@@ -225,6 +249,8 @@ def execute_dry_run_test(
         if on_status:
             on_status(f"Populating modal with {len(questions)} questions (Dry-Run mode)...")
         client.edit_questions(questions, dry_run=True)
+        if vocab_questions:
+            client.edit_questions(vocab_questions, dry_run=True, kind="vocabulary")
 
         old_state = getattr(client, "last_extracted_old_state", None)
 
@@ -233,7 +259,9 @@ def execute_dry_run_test(
             "story_name": story_name,
             "matched_title": book_info.get("matched_title"),
             "old_state": old_state,
-            "questions_count": len(questions)
+            "old_vocab_state": getattr(client, "last_extracted_old_vocab_state", None),
+            "questions_count": len(questions),
+            "vocab_questions_count": len(vocab_questions or []),
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -251,13 +279,16 @@ def execute_accept_and_apply(
     story: Dict,
     questions: List[Dict],
     config: dict,
-    on_status: Optional[Callable[[str], None]] = None
+    on_status: Optional[Callable[[str], None]] = None,
+    vocab_questions: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
     """
     Executes live update directly to Readora Lab with reviewed questions.
     Thread-safe with browser locking and automatic ProgressTracker recording.
     """
     story_name = story.get("story_name", "Unknown")
+    if not questions or not DocxParser.validate_questions(questions)["is_valid"] or (vocab_questions is not None and (not vocab_questions or not DocxParser.validate_questions(vocab_questions)["is_valid"])):
+        return {"success": False, "error": "Comprehension or vocabulary questions need correction before applying"}
     mgr = ThreadManager.get_instance()
     progress_tracker = ProgressTracker()
 
@@ -266,6 +297,7 @@ def execute_accept_and_apply(
 
     lock_acquired = mgr.acquire_browser_lock()
     client = None
+    comprehension_saved = False
 
     try:
         if on_status:
@@ -300,11 +332,19 @@ def execute_accept_and_apply(
             on_status(f"Applying {len(questions)} reviewed questions and saving...")
         # Live apply
         saved = client.edit_questions(questions, dry_run=False)
+        comprehension_saved = bool(saved)
+        if not saved:
+            raise RuntimeError("Comprehension questions were not saved")
+        if vocab_questions:
+            if on_status:
+                on_status(f"Applying {len(vocab_questions)} vocabulary questions and saving...")
+            if not client.edit_questions(vocab_questions, dry_run=False, kind="vocabulary"):
+                raise RuntimeError("Vocabulary questions were not saved")
 
         old_state = getattr(client, "last_extracted_old_state", None)
 
         if saved:
-            progress_tracker.record_success(story, len(questions), dry_run=False)
+            progress_tracker.record_success(story, len(questions) + len(vocab_questions or []), dry_run=False)
             if on_status:
                 on_status(f"Successfully applied {len(questions)} questions to '{story_name}'!")
 
@@ -334,6 +374,7 @@ def execute_accept_and_apply(
                 "story_name": story_name,
                 "matched_title": book_info.get("matched_title"),
                 "questions_count": len(questions),
+                "vocab_questions_count": len(vocab_questions or []),
                 "edit_url": book_info.get("edit_url"),
                 "old_state": old_state,
                 "sheet_result": sheet_res
@@ -344,9 +385,9 @@ def execute_accept_and_apply(
             return {"success": False, "error": err}
 
     except Exception as e:
-        err = f"Exception during Accept & Apply: {e}\n{traceback.format_exc()}"
-        progress_tracker.record_failure(story, str(e))
-        return {"success": False, "error": str(e)}
+        error = f"Comprehension saved, vocabulary update failed: {e}" if comprehension_saved and vocab_questions else str(e)
+        progress_tracker.record_failure(story, error)
+        return {"success": False, "error": error, "partial_save": bool(comprehension_saved and vocab_questions)}
 
     finally:
         if client:

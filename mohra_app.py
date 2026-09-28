@@ -74,7 +74,9 @@ def process_single_story(story: Dict, config: dict, downloader: DriveDownloader,
     # 1. Download Docx
     preferred_lang = config.get("preferred_language_file", "First language")
     with console.status(f"[bold yellow]Downloading {preferred_lang}.docx from Google Drive..."):
-        docx_path, status_msg = downloader.download_story_docx(drive_url, preferred_lang=preferred_lang)
+        docx_path, status_msg = downloader.download_story_docx(
+            drive_url, preferred_lang=preferred_lang, ai_config=config, story_name=story_name
+        )
 
     if not docx_path or not docx_path.exists():
         console.print(f"[red]Error:[/red] {status_msg}")
@@ -88,6 +90,19 @@ def process_single_story(story: Dict, config: dict, downloader: DriveDownloader,
     if not questions:
         console.print(f"[red]Error:[/red] No 'Comprehension Questions' could be parsed from {docx_path.name}")
         progress.record_failure(story, "No Comprehension Questions parsed")
+        return False
+    comp_validation = DocxParser.validate_questions(questions)
+    if not comp_validation["is_valid"]:
+        console.print(f"[red]Error:[/red] Comprehension Questions need correction: {', '.join(comp_validation['issues'])}")
+        progress.record_failure(story, "Invalid Comprehension Questions")
+        return False
+
+    vocab_present = DocxParser.has_vocabulary_quiz(docx_path)
+    vocab_questions = DocxParser.parse_vocabulary_questions(docx_path) if vocab_present else []
+    vocab_validation = DocxParser.validate_questions(vocab_questions)
+    if vocab_present and (not vocab_questions or not vocab_validation["is_valid"]):
+        console.print(f"[red]Error:[/red] Vocabulary Quiz needs correction: {', '.join(vocab_validation['issues']) or 'No questions parsed'}")
+        progress.record_failure(story, "Invalid Vocabulary Quiz")
         return False
 
     console.print(f"[green]✓[/green] Successfully parsed [bold]{len(questions)} Comprehension Questions[/bold]:")
@@ -123,8 +138,10 @@ def process_single_story(story: Dict, config: dict, downloader: DriveDownloader,
 
         # Apply questions
         success = client.edit_questions(questions, dry_run=dry_run)
+        if success and vocab_present:
+            success = client.edit_questions(vocab_questions, dry_run=dry_run, kind="vocabulary")
         if success:
-            progress.record_success(story, len(questions), dry_run=dry_run)
+            progress.record_success(story, len(questions) + len(vocab_questions), dry_run=dry_run)
             status_str = "[bold yellow]DRY-RUN SUCCESS[/bold yellow]" if dry_run else "[bold green]LIVE SUCCESS[/bold green]"
             console.print(f"{status_str}: Successfully processed '{story_name}'!\n")
             return True
@@ -156,6 +173,9 @@ def review_and_apply_story_cli(story: Dict, config: dict) -> bool:
         return False
 
     questions = res["questions"]
+    vocab_present = res.get("vocab_present", False)
+    vocab_questions = res.get("vocab_questions", [])
+    vocab_validation = res.get("vocab_validation", {})
     docx_path = res["docx_path"]
     val = res["validation"]
 
@@ -173,6 +193,21 @@ def review_and_apply_story_cli(story: Dict, config: dict) -> bool:
         q_table.add_row(str(q["num"]), q["raw_question"][:42], choices_str[:50] + "...", q["answer"])
 
     console.print(q_table)
+
+    if vocab_present:
+        vocab_table = Table(title="Vocabulary Quiz from DOCX", show_header=True, header_style="bold cyan")
+        vocab_table.add_column("No.", width=4)
+        vocab_table.add_column("Question", width=50)
+        vocab_table.add_column("Choices", width=55)
+        vocab_table.add_column("Ans", width=5)
+        for q in vocab_questions:
+            vocab_table.add_row(str(q["num"]), q["raw_question"][:50], " | ".join(c["text"] for c in q["choices"])[:55], q.get("answer") or "Missing")
+        console.print(vocab_table)
+        if not vocab_questions or not vocab_validation.get("is_valid"):
+            console.print(f"[red]Vocabulary Quiz needs correction:[/red] {', '.join(vocab_validation.get('issues', [])) or 'No questions parsed'}")
+            return False
+    else:
+        console.print("[yellow]Vocabulary Quiz skipped: section absent from DOCX.[/yellow]")
 
     # Optional live inspection of current Readora state (Old vs New)
     old_state = None
@@ -216,6 +251,21 @@ def review_and_apply_story_cli(story: Dict, config: dict) -> bool:
 
             console.print(diff_table)
 
+            if vocab_present:
+                old_vocab_questions = (readora_res.get("old_vocab_state") or {}).get("questions", [])
+                vocab_diff = Table(title="Vocabulary Quiz: Current Readora vs Incoming DOCX", show_header=True, header_style="bold cyan")
+                vocab_diff.add_column("#", width=4)
+                vocab_diff.add_column("Current Readora", width=42)
+                vocab_diff.add_column("Old key", width=7)
+                vocab_diff.add_column("Incoming DOCX", width=42)
+                vocab_diff.add_column("New key", width=7)
+                for index in range(max(len(old_vocab_questions), len(vocab_questions))):
+                    old = old_vocab_questions[index] if index < len(old_vocab_questions) else {}
+                    new = vocab_questions[index] if index < len(vocab_questions) else {}
+                    vocab_diff.add_row(str(index + 1), old.get("question", "—")[:42], old.get("answer", "—"),
+                                       new.get("raw_question", "—")[:42], new.get("answer", "—"))
+                console.print(vocab_diff)
+
     header_text = config.get("question_header", "Choose the correct answer ").strip()
     content_type = config.get("content_type", "None")
     old_q_cnt = len(old_state.get("questions", [])) if old_state else "Unknown"
@@ -224,6 +274,7 @@ def review_and_apply_story_cli(story: Dict, config: dict) -> bool:
         f"[bold]Target Changes on Readora Lab:[/bold]\n"
         f"• Current Questions on Server (OLD): [red]{old_q_cnt}[/red]\n"
         f"• Verified Questions to Write (NEW): [green]{len(questions)}[/green]\n"
+        f"• Vocabulary Quiz Questions: [cyan]{len(vocab_questions) if vocab_present else 'Skipped'}[/cyan]\n"
         f"• Question Header: [cyan]{header_text}[/cyan]\n"
         f"• Content Type: [cyan]{content_type}[/cyan]\n"
         f"• Action: Existing questions will be replaced by verified questions\n"
@@ -239,7 +290,8 @@ def review_and_apply_story_cli(story: Dict, config: dict) -> bool:
                 story,
                 questions,
                 config,
-                on_status=lambda msg: console.print(f"  [dim]• {msg}[/dim]")
+                on_status=lambda msg: console.print(f"  [dim]• {msg}[/dim]"),
+                vocab_questions=vocab_questions if vocab_present else None,
             )
         if apply_res["success"]:
             console.print(f"\n[bold green]🎉 LIVE SUCCESS: Successfully updated '{story_name}' on Readora Lab![/bold green]")

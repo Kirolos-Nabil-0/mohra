@@ -265,6 +265,33 @@ class ReadoraClient:
             "total_questions": len(questions)
         }
 
+    def _open_question_modal(self, kind: str):
+        label = "EDIT VOCAB TEST" if kind == "vocabulary" else "EDIT QUESTIONS"
+        button = self.page.get_by_role("button", name=re.compile(label, re.IGNORECASE)).first
+        button.wait_for(state="visible", timeout=10000)
+        button.click()
+        modal = self.page.locator('.MuiModal-root form:has(h6:has-text("Edit Bulk Question")), form:has(h6:has-text("Edit Bulk Question"))').first
+        modal.wait_for(state="visible", timeout=10000)
+        return modal
+
+    @staticmethod
+    def _questions_match(expected: List[Dict], actual: List[Dict]) -> bool:
+        def clean(value):
+            return " ".join(str(value or "").split())
+
+        if len(expected) != len(actual):
+            return False
+        for wanted, saved in zip(expected, actual):
+            if clean(wanted.get("question")) != clean(saved.get("question")):
+                return False
+            if wanted.get("answer") != saved.get("answer"):
+                return False
+            wanted_choices = [clean(choice.get("text")) for choice in wanted.get("choices", [])]
+            saved_choices = [clean(choice.get("text")) for choice in saved.get("choices", [])]
+            if wanted_choices != saved_choices:
+                return False
+        return True
+
     def fetch_existing_questions(self, story_name: str) -> Dict[str, Any]:
         """
         Navigates to Readora Lab, finds the book, opens the question modal,
@@ -284,13 +311,8 @@ class ReadoraClient:
 
         self.open_book_edit(book_info)
 
-        print("[ReadoraClient] Opening 'Edit Questions' dialog to inspect current state...")
-        edit_q_btn = self.page.locator('button:has-text("EDIT QUESTIONS"), button:has-text("Edit Questions")').first
-        edit_q_btn.wait_for(state="visible", timeout=10000)
-        edit_q_btn.click()
-
-        modal_form = self.page.locator('.MuiModal-root form, form:has(h6:has-text("Edit Bulk Question"))').first
-        modal_form.wait_for(state="visible", timeout=10000)
+        print("[ReadoraClient] Inspecting comprehension and vocabulary dialogs...")
+        modal_form = self._open_question_modal("comprehension")
 
         old_state = self.extract_current_modal_state(modal_form)
         print(f"[ReadoraClient] Successfully read {len(old_state['questions'])} existing questions from Readora.")
@@ -299,26 +321,30 @@ class ReadoraClient:
         self.page.keyboard.press("Escape")
         self.page.wait_for_timeout(300)
 
+        vocab_form = self._open_question_modal("vocabulary")
+        old_vocab_state = self.extract_current_modal_state(vocab_form)
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_timeout(300)
+
         return {
             "success": True,
             "story_name": story_name,
             "matched_title": book_info.get("matched_title"),
-            "old_state": old_state
+            "old_state": old_state,
+            "old_vocab_state": old_vocab_state,
         }
 
-    def edit_questions(self, questions: List[Dict], dry_run: bool = True) -> bool:
-        print(f"[ReadoraClient] Opening 'Edit Questions' dialog ({len(questions)} questions to apply)...")
-        edit_q_btn = self.page.locator('button:has-text("EDIT QUESTIONS"), button:has-text("Edit Questions")').first
-        edit_q_btn.wait_for(state="visible", timeout=10000)
-        edit_q_btn.click()
-
-        # Wait for modal form
-        modal_form = self.page.locator('.MuiModal-root form, form:has(h6:has-text("Edit Bulk Question"))').first
-        modal_form.wait_for(state="visible", timeout=10000)
+    def edit_questions(self, questions: List[Dict], dry_run: bool = True, kind: str = "comprehension") -> bool:
+        print(f"[ReadoraClient] Opening '{kind}' dialog ({len(questions)} questions to apply)...")
+        modal_form = self._open_question_modal(kind)
 
         # 0. Extract current state before making any modifications
-        self.last_extracted_old_state = self.extract_current_modal_state(modal_form)
-        print(f"[ReadoraClient] Current Readora state: {len(self.last_extracted_old_state['questions'])} existing questions.")
+        old_state = self.extract_current_modal_state(modal_form)
+        if kind == "vocabulary":
+            self.last_extracted_old_vocab_state = old_state
+        else:
+            self.last_extracted_old_state = old_state
+        print(f"[ReadoraClient] Current Readora state: {len(old_state['questions'])} existing questions.")
 
         # 1. Fill Question Header
         header_text = self.config.get("question_header", "Choose the correct answer ")
@@ -405,11 +431,12 @@ class ReadoraClient:
             update_btn = modal_form.locator('button:has-text("UPDATE")').first
             update_btn.scroll_into_view_if_needed()
             update_btn.click()
-            try:
-                modal_form.wait_for(state="hidden", timeout=12000)
-            except Exception:
-                pass
-            self.page.wait_for_timeout(1500)
+            modal_form.wait_for(state="hidden", timeout=12000)
             self.page.wait_for_load_state("networkidle")
-            print("[ReadoraClient] Questions saved successfully!")
+            verification_form = self._open_question_modal(kind)
+            saved_state = self.extract_current_modal_state(verification_form)
+            self.page.keyboard.press("Escape")
+            if not self._questions_match(questions, saved_state["questions"]):
+                raise RuntimeError(f"{kind.title()} save could not be verified in Readora")
+            print(f"[ReadoraClient] {kind.title()} questions saved and verified!")
             return True

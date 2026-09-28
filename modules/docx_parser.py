@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union, Any
 
 class DocxParser:
-    VOCAB_HEADING = re.compile(r"^(?:(?:Cambridge\s+EFL|Grade\s+\d+(?:\s*\([^)]*\))?)\s+)?Vocabulary\s+Quiz(?:\s+Questions)?\s*:?$", re.IGNORECASE)
+    VOCAB_HEADING = re.compile(
+        r"^(?:(?:Cambridge\s+EFL|Grade\s+\d+(?:\s*\([^)]*\))?)\s+)?"
+        r"(?:Vocabulary|Vocab)\s+(?:Quiz(?:\s+Questions)?|Questions|Test)\s*:?$",
+        re.IGNORECASE,
+    )
     COMPREHENSION_HEADING = re.compile(r"^Comprehension\s+Questions\s*:?$", re.IGNORECASE)
 
     @staticmethod

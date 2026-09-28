@@ -199,6 +199,7 @@ class ReadoraClient:
         print(f"[ReadoraClient] Navigating to book edit page: {edit_url}")
         self.page.goto(edit_url, timeout=25000)
         self.page.wait_for_load_state("networkidle")
+        self.last_saved_comprehension_questions = None
         print(f"[ReadoraClient] Opened edit page: {self.page.url}")
         return True
 
@@ -266,12 +267,18 @@ class ReadoraClient:
         }
 
     def _open_question_modal(self, kind: str):
+        if kind not in ("comprehension", "vocabulary"):
+            raise ValueError(f"Unknown question section: {kind}")
         label = "EDIT VOCAB TEST" if kind == "vocabulary" else "EDIT QUESTIONS"
-        button = self.page.get_by_role("button", name=re.compile(label, re.IGNORECASE)).first
+        button = self.page.get_by_role("button", name=re.compile(rf"^\s*{re.escape(label)}\s*$", re.IGNORECASE))
+        if button.count() != 1:
+            raise RuntimeError(f"Expected one '{label}' button, found {button.count()}")
         button.wait_for(state="visible", timeout=10000)
         button.click()
-        modal = self.page.locator('.MuiModal-root form:has(h6:has-text("Edit Bulk Question")), form:has(h6:has-text("Edit Bulk Question"))').first
-        modal.wait_for(state="visible", timeout=10000)
+        modal = self.page.locator('.MuiModal-root:visible form:has(h6:has-text("Edit Bulk Question"))')
+        modal.first.wait_for(state="visible", timeout=10000)
+        if modal.count() != 1:
+            raise RuntimeError(f"Expected one visible {kind} question dialog, found {modal.count()}")
         return modal
 
     @staticmethod
@@ -342,6 +349,10 @@ class ReadoraClient:
         old_state = self.extract_current_modal_state(modal_form)
         if kind == "vocabulary":
             self.last_extracted_old_vocab_state = old_state
+            saved_comprehension = getattr(self, "last_saved_comprehension_questions", None)
+            if saved_comprehension and self._questions_match(saved_comprehension, old_state["questions"]):
+                self.page.keyboard.press("Escape")
+                raise RuntimeError("Vocabulary dialog shows the comprehension questions; refusing to overwrite them")
         else:
             self.last_extracted_old_state = old_state
         print(f"[ReadoraClient] Current Readora state: {len(old_state['questions'])} existing questions.")
@@ -438,5 +449,13 @@ class ReadoraClient:
             self.page.keyboard.press("Escape")
             if not self._questions_match(questions, saved_state["questions"]):
                 raise RuntimeError(f"{kind.title()} save could not be verified in Readora")
+            if kind == "comprehension":
+                self.last_saved_comprehension_questions = questions
+            elif getattr(self, "last_saved_comprehension_questions", None):
+                comprehension_form = self._open_question_modal("comprehension")
+                comprehension_state = self.extract_current_modal_state(comprehension_form)
+                self.page.keyboard.press("Escape")
+                if not self._questions_match(self.last_saved_comprehension_questions, comprehension_state["questions"]):
+                    raise RuntimeError("Vocabulary save changed the comprehension questions in Readora")
             print(f"[ReadoraClient] {kind.title()} questions saved and verified!")
             return True

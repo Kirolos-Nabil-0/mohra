@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bump Mohra's version, commit the release metadata, and push it to GitHub.
+"""Bump Mohra's version, capture the current config, and push to GitHub.
 
 GitHub Actions builds the Windows packages and publishes the GitHub Release
 after this script pushes to main or master.
@@ -127,7 +127,7 @@ def main() -> int:
             raise RuntimeError("Could not find the installer version in installer.iss.")
         INSTALLER_FILE.write_text(updated_text, encoding="utf-8")
 
-        git("add", "--", "release.py", "version.json", "installer.iss")
+        git("add", "--", "release.py", "version.json", "installer.iss", "config.json")
         git("commit", "-m", f"chore(release): v{new_version}")
         git("push", "origin", branch)
 

@@ -4,6 +4,7 @@
   "assigned_to": "Mohra",
   "gmail_account": "mohrawagdy58@gmail.com",
   "gmail_password": "Mohra7788123",
+  "auto_mark_sheet_done": true,
   "readora_login_url": "https://www.readoralab.com/auth/login",
   "readora_books_url": "https://www.readoralab.com/super_admin/books",
   "readora_email": "super9@test.com",
@@ -21,9 +22,9 @@
   "watch_downloads_folder": true,
   "auto_process_pending": true,
   "auto_update": true,
-  "auto_update_apply": false,
   "update_check_interval_seconds": 3600,
   "github_repo": "Kirolos-Nabil-0/mohra",
+  "update_branch": "main",
   "update_url": "https://api.github.com/repos/Kirolos-Nabil-0/mohra/releases/latest",
   "update_zip_url": "",
   "log_file": "logs/background.log",
@@ -34,7 +35,5 @@
   "telegram_bot_token": "8996227771:AAEW3d-H-BoReQZ40YF1xmcpzSlCgflWXQk",
   "telegram_chat_id": "8931330674",
   "groq_api_key": "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",
-  "groq_model": "qwen/qwen3.8-27b",
-  "auto_mark_sheet_done": true,
-  "update_branch": "main"
+  "groq_model": "qwen/qwen3.8-27b"
 }

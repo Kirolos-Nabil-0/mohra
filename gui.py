@@ -561,7 +561,7 @@ class MohraAppGUI:
                 done_count = sum(1 for s in self.all_stories if s["is_done"])
                 pending_count = len(self.all_stories) - done_count
                 self.log(f"[Sheet] Loaded {len(self.all_stories)} stories ({pending_count} pending, {done_count} completed).")
-                self.root.after(0, self._filter_stories)
+                self.root.after(0, self._show_all_assigned_stories)
             except Exception as e:
                 self.log(f"[Sheet] Error syncing from Google Sheets: {e}")
 
@@ -718,11 +718,17 @@ class MohraAppGUI:
                     f"assigned to {self.sheet_parser.assigned_to.title()} "
                     f"({pending_count} pending, {done_count} completed). Tabs: {worksheet_names}."
                 )
-                self.root.after(0, self._filter_stories)
+                self.root.after(0, self._show_all_assigned_stories)
             except Exception as e:
                 self.log(f"[Sheet] Workbook load failed: {e}", level="ERROR")
 
         self.manager.submit_task(worker_func, name="LoadStoriesTask")
+
+    def _show_all_assigned_stories(self):
+        """Clear stale search/status filters after a workbook load or refresh."""
+        self.search_var.set("")
+        self.filter_var.set("All Stories")
+        self._filter_stories()
 
     def _filter_stories(self):
         query = self.search_var.get().strip().lower()

@@ -40,7 +40,7 @@ jobs:
 
       - name: Install Playwright Chromium
         run: |
-          playwright install chromium
+          python -m playwright install chromium
 
       - name: Read Application Version
         id: get_version

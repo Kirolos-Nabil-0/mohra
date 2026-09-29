@@ -1,6 +1,6 @@
 # Mohra App - Readora Automation Tool
 
-Automated tool designed for **Windows** (and macOS/Linux) to process stories assigned to **Mohra**, extract **Comprehension Questions** from Google Drive docx files, and automatically populate them into **Readora Lab** (`https://www.readoralab.com`).
+Automated tool designed for **Windows** (and macOS/Linux) to view grade-wide story assignments, process stories claimed by the configured teammate, extract **Comprehension Questions** from Google Drive docx files, and automatically populate them into **Readora Lab** (`https://www.readoralab.com`).
 
 ---
 
@@ -13,6 +13,8 @@ Automated tool designed for **Windows** (and macOS/Linux) to process stories ass
 2. **Auto-Detects Downloaded Sheet**:
    - Automatically detects when a new or updated Google Sheet (`Data Entry _ Website _ First Language.xlsx`) arrives in your `Downloads` folder!
    - Can also download fresh updates directly via Google Sheets URL.
+   - The desktop GUI shows stories across every grade tab, including stories assigned to other teammates. Use **Claim PATCH** to claim up to 30 unassigned stories in a grade; the configured teammate name is set in Settings and the claim is refreshed and verified against the global Sheet.
+   - **Edit Global Sheet** opens the global workbook in Chrome only after verifying the configured Gmail. Direct editing requires that account to have editor permission in Google Sheets.
 3. **Universal Google Drive Docx Downloader**:
    - Finds a clearly named First language or EFL DOCX/Google Doc in the story's Drive folder or an `OUTPUT` subfolder. If no language label is present, an exact match to the story title in the sheet is used. Google Docs are exported to DOCX for review.
    - When several files match or none is clear, the review window opens a Drive file browser. Navigate folders and choose the First Language document explicitly; Second Language files cannot be selected.

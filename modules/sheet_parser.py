@@ -6,6 +6,37 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Optional
 
+
+PATCH_SIZE = 30
+
+
+def group_unassigned_patches(stories: List[Dict], patch_size: int = PATCH_SIZE) -> List[Dict]:
+    """Group pending, unassigned stories into row-ordered patches per worksheet."""
+    if patch_size < 1:
+        raise ValueError("patch_size must be at least 1")
+
+    grade_order = []
+    by_grade = {}
+    for story in stories:
+        grade = story.get("sheet_name", "Sheet")
+        if grade not in by_grade:
+            by_grade[grade] = []
+            grade_order.append(grade)
+        if story.get("assignment_is_blank", not str(story.get("assigned_to", "")).strip()) and not story.get("is_done", False):
+            by_grade[grade].append(story)
+
+    patches = []
+    for grade in grade_order:
+        candidates = sorted(by_grade[grade], key=lambda story: int(story.get("row_index", 0)))
+        for offset in range(0, len(candidates), patch_size):
+            patch_stories = candidates[offset:offset + patch_size]
+            patches.append({
+                "sheet_name": grade,
+                "patch_number": offset // patch_size + 1,
+                "stories": patch_stories,
+            })
+    return patches
+
 def extract_spreadsheet_id(url: str) -> Optional[str]:
     m = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url)
     return m.group(1) if m else None
@@ -38,9 +69,10 @@ def auto_detect_downloads_sheet() -> Optional[Path]:
     return None
 
 class SheetParser:
-    def __init__(self, sheet_url: str = "", assigned_to: str = "Mohra", cache_dir: str = "./cache", local_file_path: Optional[str] = None, sheet_source: str = "url"):
+    def __init__(self, sheet_url: str = "", assigned_to: str = "Mohra", cache_dir: str = "./cache", local_file_path: Optional[str] = None, sheet_source: str = "url", include_all_assignments: bool = False):
         self.sheet_url = sheet_url
         self.assigned_to = assigned_to.strip().lower()
+        self.include_all_assignments = bool(include_all_assignments)
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.sheet_source = sheet_source
@@ -79,17 +111,60 @@ class SheetParser:
         req = urllib.request.Request(
             export_url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
             }
         )
         dest = self.cache_dir / "latest_sheet.xlsx"
-        with urllib.request.urlopen(req) as resp:
-            content = resp.read()
-            with open(dest, "wb") as f:
-                f.write(content)
+        public_error = None
+        content = b""
+        try:
+            with urllib.request.urlopen(req) as resp:
+                content = resp.read()
+            if not content.startswith(b"PK"):
+                raise ValueError("Google returned a non-Excel response; authenticated access may be required.")
+        except Exception as exc:
+            public_error = exc
+            try:
+                content = self._download_export_with_verified_gmail(export_url)
+            except Exception as auth_exc:
+                raise RuntimeError(
+                    f"Could not download the global Google Sheet. Public export failed ({public_error}); "
+                    f"verified Gmail export failed ({auth_exc})."
+                ) from auth_exc
+
+        with open(dest, "wb") as f:
+            f.write(content)
         self.xlsx_path = dest
         self.source_type = "google_sheet_url"
         return self.xlsx_path
+
+    def _download_export_with_verified_gmail(self, export_url: str) -> bytes:
+        """Fetch a private spreadsheet export through the verified Chrome session."""
+        from config import load_config
+        from modules.google_auth import GoogleAuthenticator
+        from playwright.sync_api import sync_playwright
+
+        config = load_config()
+        auth = GoogleAuthenticator(config)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://localhost:{auth.port}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            is_logged_in, status = auth.verify_login_status(context)
+            if not is_logged_in:
+                raise PermissionError(f"Chrome is not verified as {auth.email}: {status}")
+            response = context.request.get(
+                export_url,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                timeout=30000,
+            )
+            if not response.ok:
+                raise RuntimeError(f"Google export returned HTTP {response.status}")
+            content = response.body()
+            if not content.startswith(b"PK"):
+                raise ValueError("Verified Gmail export did not return an Excel workbook.")
+            return content
 
     def parse_stories(self, force_download: bool = False) -> List[Dict]:
         self.last_refresh_error = None
@@ -187,6 +262,7 @@ class SheetParser:
 
                 # Parse rows
                 header_cols = {}
+                assignment_columns = ["C"]
                 for row in s_root.findall(".//s:row", ns):
                     rows_scanned += 1
                     r_idx = int(row.attrib["r"])
@@ -220,16 +296,35 @@ class SheetParser:
                     if r_idx in (1, 2) and any("story" in str(v[0]).lower() for v in cols.values()):
                         for col_k, (col_v, _) in cols.items():
                             header_cols[col_k] = col_v.lower().strip()
+                        assignment_columns = [
+                            col_k for col_k, label in header_cols.items()
+                            if re.sub(r"[^a-z]", "", label) in {"assignedto", "assigndto", "assignee"}
+                        ] or ["C"]
+                        assignment_columns.sort(key=lambda col: (len(col), col))
                         continue
 
-                    assigned_val = cols.get("C", ("", ""))[0]
+                    assignment_values = {
+                        col: cols.get(col, ("", ""))[0]
+                        for col in assignment_columns
+                    }
+                    nonempty_assignments = [
+                        (col, value) for col, value in assignment_values.items() if value.strip()
+                    ]
+                    distinct_assignees = {value.strip().casefold() for _, value in nonempty_assignments}
+                    assignment_conflict = len(distinct_assignees) > 1
+                    if assignment_conflict:
+                        assigned_val = " / ".join(f"{col}: {value}" for col, value in nonempty_assignments)
+                    else:
+                        assigned_val = nonempty_assignments[0][1] if nonempty_assignments else ""
                     story_val, story_link = cols.get("B", ("", ""))
                     comment_val = cols.get("D", ("", ""))[0]
-
                     assignment_matches = bool(
-                        self.assigned_to and self.assigned_to == assigned_val.strip().lower()
+                        self.assigned_to
+                        and not assignment_conflict
+                        and assigned_val.strip().casefold() == self.assigned_to
                     )
-                    if story_val.strip() and assignment_matches:
+
+                    if story_val.strip() and (self.include_all_assignments or assignment_matches):
                         drive_url = story_link or ""
                         if not drive_url and "drive.google.com" in story_val:
                             drive_url = story_val
@@ -246,6 +341,10 @@ class SheetParser:
                             "story_name": clean_story_name,
                             "raw_story_name": story_val,
                             "assigned_to": assigned_val,
+                            "assignment_columns": list(assignment_values),
+                            "assignment_values": assignment_values,
+                            "assignment_is_blank": not bool(nonempty_assignments),
+                            "assignment_conflict": assignment_conflict,
                             "comment": comment_val,
                             "is_done": is_done,
                             "drive_url": drive_url,

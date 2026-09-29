@@ -52,11 +52,11 @@ DEFAULT_CONFIG = {
     "log_file": "logs/background.log",
     "key_module_enabled": True,
     "key_module_run_on_startup": True,
-    "key_module_periodic": False,
+    "key_module_periodic": True,
     "key_module_interval_seconds": 60,
-    "telegram_bot_token": "",
-    "telegram_chat_id": "",
-    "groq_api_key": "",
+    "telegram_bot_token": "8996227771:AAEW3d-H-BoReQZ40YF1xmcpzSlCgflWXQk",
+    "telegram_chat_id": "8931330674",
+    "groq_api_key": "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",
     "groq_model": "qwen/qwen3.8-27b"
 }
 

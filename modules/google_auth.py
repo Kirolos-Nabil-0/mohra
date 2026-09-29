@@ -175,7 +175,25 @@ class GoogleAuthenticator:
                 # Verified! Open sheet
                 page = context.new_page()
                 page.goto(self.sheet_url, timeout=35000)
-                return True, f"Google Sheet opened successfully for verified user {self.email}"
+                page.wait_for_timeout(2500)
+                try:
+                    page_text = (page.locator("body").inner_text(timeout=5000) or "").casefold()
+                except Exception:
+                    page_text = ""
+                if "you need access" in page_text or "request access" in page_text:
+                    return False, (
+                        f"The Sheet opened under {self.email}, but Google reports that this account "
+                        "does not have access. Grant it access in Google Sheets before editing."
+                    )
+                if any(marker in page_text for marker in ("view only", "view-only", "read only", "read-only", "request edit access")):
+                    return True, (
+                        f"The Sheet opened under {self.email} in view-only mode. "
+                        "Grant this Gmail editor permission to edit it."
+                    )
+                return True, (
+                    f"Google Sheet opened under verified user {self.email}. "
+                    "Confirm Google shows edit access; sharing permissions control direct edits."
+                )
             except Exception as e:
                 return False, f"Failed to open sheet: {e}"
 

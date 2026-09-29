@@ -13,7 +13,7 @@ from ttkbootstrap.constants import *
 from config import load_config, save_config
 from modules.browser_installer import init_playwright_env
 init_playwright_env()
-from modules.sheet_parser import SheetParser
+from modules.sheet_parser import PATCH_SIZE, SheetParser, group_unassigned_patches
 from modules.drive_downloader import DriveDownloader
 from modules.docx_parser import DocxParser
 from modules.progress import ProgressTracker
@@ -63,7 +63,8 @@ class MohraAppGUI:
             sheet_url=self.config.get("sheet_url", ""),
             assigned_to=self.config.get("assigned_to", "Mohra"),
             cache_dir=self.config.get("cache_dir", "./cache"),
-            sheet_source=self.config.get("sheet_source", "url")
+            sheet_source=self.config.get("sheet_source", "url"),
+            include_all_assignments=True,
         )
         self.downloader = DriveDownloader(cache_dir=self.config.get("cache_dir", "./cache"))
         self.progress_tracker = ProgressTracker()
@@ -208,7 +209,7 @@ class MohraAppGUI:
         ).pack(side=tk.LEFT, padx=3)
 
         tbs.Button(
-            r1_right, text="📊  Open Sheet",
+            r1_right, text="✏️  Edit Global Sheet",
             bootstyle="secondary-outline", command=self._safe_open_google_sheet
         ).pack(side=tk.LEFT, padx=3)
 
@@ -293,6 +294,20 @@ class MohraAppGUI:
             bootstyle="info", command=self._open_dry_run_review
         )
         self.btn_review.pack(side=tk.RIGHT, padx=4)
+
+        claim_frame = tbs.Frame(self.root, padding=(8, 2))
+        claim_frame.pack(fill=tk.X, padx=12, pady=(0, 2))
+        self.btn_claim_patch = tbs.Button(
+            claim_frame, text="📦  Claim PATCH",
+            bootstyle="warning", command=self._open_claim_patch_dialog
+        )
+        self.btn_claim_patch.pack(side=tk.LEFT, padx=(0, 8))
+        self.lbl_claim_identity = tbs.Label(
+            claim_frame,
+            text=f"Claiming as: {self.config.get('assigned_to', 'Mohra')}",
+            font=("Segoe UI", 9, "bold"), bootstyle="warning"
+        )
+        self.lbl_claim_identity.pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=12, pady=(4, 0))
 
@@ -516,6 +531,7 @@ class MohraAppGUI:
             local_file_path=str(sheet_path),
             assigned_to=self.config.get("assigned_to", "Mohra"),
             cache_dir=self.config.get("cache_dir", "./cache"),
+            include_all_assignments=True,
         )
         self.root.after(0, lambda: self.sheet_lbl.config(text=f"📄  downloads  ·  {sheet_path.name}"))
         self._load_stories_threaded()
@@ -546,6 +562,7 @@ class MohraAppGUI:
                 local_file_path=filepath,
                 assigned_to=self.config.get("assigned_to", "Mohra"),
                 cache_dir=self.config.get("cache_dir", "./cache"),
+                include_all_assignments=True,
             )
             self.sheet_lbl.config(text=f"📄  custom  ·  {Path(filepath).name}")
             self._load_stories_threaded()
@@ -642,8 +659,18 @@ class MohraAppGUI:
             success, msg = auth.safe_open_sheet()
             if success:
                 self.log(f"[GoogleSheet] {msg}")
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Global Google Sheet",
+                    f"Opened the global Sheet in Chrome as {target_acc}.\n\n"
+                    f"{msg}\n\n"
+                    "Direct editing depends on this Gmail account's Google Sheets permissions.",
+                    parent=self.root,
+                ))
             else:
                 self.log(f"[GoogleSheet] Failed to open: {msg}", level="ERROR")
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Could Not Open Global Sheet", msg, parent=self.root
+                ))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -714,8 +741,7 @@ class MohraAppGUI:
                     )
                 self.log(
                     f"[Sheet] Read {len(summary['worksheets'])} worksheets "
-                    f"({summary['rows_scanned']} rows); loaded {len(self.all_stories)} stories "
-                    f"assigned to {self.sheet_parser.assigned_to.title()} "
+                    f"({summary['rows_scanned']} rows); loaded all {len(self.all_stories)} stories "
                     f"({pending_count} pending, {done_count} completed). Tabs: {worksheet_names}."
                 )
                 self.root.after(0, self._show_all_assigned_stories)
@@ -798,7 +824,193 @@ class MohraAppGUI:
     def _story_is_assigned_to_current_user(self, story: Dict) -> bool:
         target = str(self.config.get("assigned_to", "")).strip().lower()
         assigned_to = str(story.get("assigned_to", "")).strip().lower()
-        return bool(target and assigned_to == target)
+        return bool(target and not story.get("assignment_conflict", False) and assigned_to == target)
+
+    def _open_claim_patch_dialog(self):
+        owner = str(self.config.get("assigned_to", "")).strip()
+        if not owner:
+            messagebox.showwarning(
+                "Assignee Name Required",
+                "Set the teammate name in Settings before claiming a PATCH.",
+                parent=self.root,
+            )
+            return
+
+        patches = group_unassigned_patches(self.all_stories)
+        if not patches:
+            messagebox.showinfo(
+                "No PATCHes Available",
+                "There are no pending unassigned stories to claim.",
+                parent=self.root,
+            )
+            return
+
+        dlg = tbs.Toplevel(self.root)
+        dlg.title("Claim a PATCH")
+        dlg.geometry("700x560")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        body = tbs.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        tbs.Label(
+            body,
+            text=f"Claim up to {PATCH_SIZE} unassigned stories per grade as {owner}.",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        selector = tbs.Frame(body)
+        selector.pack(fill=tk.X, pady=(0, 8))
+        grade_var = tk.StringVar()
+        patch_var = tk.StringVar()
+        tbs.Label(selector, text="Grade:").pack(side=tk.LEFT, padx=(0, 4))
+        grade_cb = tbs.Combobox(selector, textvariable=grade_var, state="readonly", width=18)
+        grade_cb.pack(side=tk.LEFT, padx=(0, 12))
+        tbs.Label(selector, text="PATCH:").pack(side=tk.LEFT, padx=(0, 4))
+        patch_cb = tbs.Combobox(selector, textvariable=patch_var, state="readonly", width=34)
+        patch_cb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        preview_frame = tbs.Frame(body)
+        preview_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+        preview = tbs.Treeview(preview_frame, columns=("row", "story"), show="headings", height=17)
+        preview.heading("row", text="Row")
+        preview.heading("story", text="Story")
+        preview.column("row", width=70, anchor=tk.CENTER)
+        preview.column("story", width=540)
+        preview_scroll = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview.yview)
+        preview.configure(yscrollcommand=preview_scroll.set)
+        preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        info_lbl = tbs.Label(body, text="", bootstyle="secondary")
+        info_lbl.pack(anchor=tk.W, pady=(0, 8))
+        patch_by_label = {}
+
+        def update_preview(_event=None):
+            for item in preview.get_children():
+                preview.delete(item)
+            patch = patch_by_label.get(patch_var.get())
+            if not patch:
+                info_lbl.config(text="No unassigned stories in this grade.")
+                return
+            rows = [int(story["row_index"]) for story in patch["stories"]]
+            info_lbl.config(
+                text=f"{len(rows)} stories · rows {min(rows)}–{max(rows)} · "
+                     f"claim writes to the global Sheet as {owner}"
+            )
+            for story in patch["stories"]:
+                preview.insert("", tk.END, values=(story["row_index"], story["story_name"]))
+
+        def update_patch_choices(_event=None):
+            grade_patches = [patch for patch in patches if patch["sheet_name"] == grade_var.get()]
+            labels = []
+            patch_by_label.clear()
+            for patch in grade_patches:
+                rows = [int(story["row_index"]) for story in patch["stories"]]
+                label = f"PATCH {patch['patch_number']} · {len(rows)} stories · rows {min(rows)}–{max(rows)}"
+                labels.append(label)
+                patch_by_label[label] = patch
+            patch_cb["values"] = labels
+            patch_var.set(labels[0] if labels else "")
+            update_preview()
+
+        grade_cb.bind("<<ComboboxSelected>>", update_patch_choices)
+        patch_cb.bind("<<ComboboxSelected>>", update_preview)
+        grades = list(dict.fromkeys(patch["sheet_name"] for patch in patches))
+        grade_cb["values"] = grades
+        grade_var.set(grades[0])
+        update_patch_choices()
+
+        buttons = tbs.Frame(body)
+        buttons.pack(fill=tk.X)
+        claim_btn = tbs.Button(buttons, text="Claim Selected PATCH", bootstyle="success")
+        claim_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_btn = tbs.Button(buttons, text="Cancel", bootstyle="secondary-outline", command=dlg.destroy)
+        cancel_btn.pack(side=tk.RIGHT)
+
+        def claim_selected_patch():
+            patch = patch_by_label.get(patch_var.get())
+            if not patch:
+                return
+            stories = patch["stories"]
+            count = len(stories)
+            gmail = self.config.get("gmail_account", "mohrawagdy58@gmail.com")
+            if not messagebox.askyesno(
+                "Confirm PATCH Claim",
+                f"Claim {count} stories from {patch['sheet_name']} as {owner}?\n\n"
+                f"The global Sheet will be updated in the verified Gmail session ({gmail}).",
+                parent=dlg,
+            ):
+                return
+
+            claim_btn.config(state=tk.DISABLED, text="Claiming…")
+            cancel_btn.config(state=tk.DISABLED)
+            dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+            self.log(
+                f"[PATCH] Refreshing global Sheet before claiming "
+                f"{patch['sheet_name']} PATCH {patch['patch_number']}…"
+            )
+
+            def worker():
+                from modules.google_sheet_updater import GoogleSheetUpdater
+                result = GoogleSheetUpdater(self.config).claim_patch(stories, owner)
+
+                def finish():
+                    if result.get("success"):
+                        claimed_stories = {
+                            (story["sheet_name"], int(story["row_index"])): story
+                            for story in result.get("stories", [])
+                        }
+                        for story in self.all_stories:
+                            key = (story["sheet_name"], int(story["row_index"]))
+                            claimed = claimed_stories.get(key)
+                            if claimed is None:
+                                continue
+                            story["assigned_to"] = owner
+                            story["assignment_columns"] = list(claimed.get("assignment_columns", ["C"]))
+                            story["assignment_is_blank"] = False
+                            story["assignment_conflict"] = False
+                            story["assignment_values"] = dict(claimed.get("assignment_values", {}))
+                        self._filter_stories()
+                        self.log(
+                            f"[PATCH] Claimed and verified {result['story_count']} stories in "
+                            f"'{result['sheet_name']}' as {owner} using {result['gmail_account']}."
+                        )
+                        dlg.destroy()
+                        messagebox.showinfo(
+                            "PATCH Claimed",
+                            f"Claimed {result['story_count']} stories in {result['sheet_name']} as {owner}.\n\n"
+                            "The global Sheet confirmed the assignee values.",
+                            parent=self.root,
+                        )
+                    else:
+                        claim_btn.config(state=tk.NORMAL, text="Claim Selected PATCH")
+                        cancel_btn.config(state=tk.NORMAL)
+                        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+                        self.log(f"[PATCH] Claim failed: {result.get('error', 'Unknown error')}", level="ERROR")
+                        messagebox.showerror(
+                            "PATCH Claim Failed",
+                            f"{result.get('error', 'Unknown error')}\n\n"
+                            "If the Sheet changed during the attempt, refresh the workbook and choose a PATCH again.",
+                            parent=dlg,
+                        )
+                        if result.get("partial_write") or result.get("conflict"):
+                            self._refresh_global_sheet_view()
+
+                self.root.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_global_sheet_view(self):
+        """Replace any local workbook view with a fresh all-assignee global view."""
+        self.sheet_parser = SheetParser(
+            sheet_url=self.config.get("sheet_url", ""),
+            assigned_to=self.config.get("assigned_to", "Mohra"),
+            cache_dir=self.config.get("cache_dir", "./cache"),
+            sheet_source="url",
+            include_all_assignments=True,
+        )
+        self.sheet_lbl.config(text=f"📄  google_sheet_url  ·  {self.sheet_parser.xlsx_path.name}")
+        self._load_stories_threaded()
 
     def _warn_if_story_not_assigned_to_current_user(self, story: Dict) -> bool:
         if self._story_is_assigned_to_current_user(story):
@@ -892,7 +1104,7 @@ class MohraAppGUI:
         """Opens a modal to view and update settings, including Groq API Key."""
         dlg = tbs.Toplevel(self.root)
         dlg.title("⚙️ Application Settings")
-        dlg.geometry("680x660")
+        dlg.geometry("680x700")
         dlg.transient(self.root)
         dlg.grab_set()
 
@@ -900,8 +1112,8 @@ class MohraAppGUI:
         self.root.update_idletasks()
         try:
             x = self.root.winfo_x() + (self.root.winfo_width() - 680) // 2
-            y = self.root.winfo_y() + (self.root.winfo_height() - 660) // 2
-            dlg.geometry(f"680x660+{max(0, x)}+{max(0, y)}")
+            y = self.root.winfo_y() + (self.root.winfo_height() - 700) // 2
+            dlg.geometry(f"680x700+{max(0, x)}+{max(0, y)}")
         except Exception:
             pass
 
@@ -979,12 +1191,20 @@ class MohraAppGUI:
 
         tbs.Label(
             google_box,
-            text="Target Gmail Account (Must match logged-in Chrome session):",
+            text="Teammate name written to Assignd To for PATCH claims:",
             font=("Segoe UI", 9, "bold")
         ).grid(row=0, column=0, sticky=tk.W, pady=3)
+        assignee_var = tk.StringVar(value=self.config.get("assigned_to", "Mohra"))
+        tbs.Entry(google_box, textvariable=assignee_var, width=32).grid(row=0, column=1, sticky=tk.W, pady=3, padx=6)
+
+        tbs.Label(
+            google_box,
+            text="Target Gmail Account (Must match logged-in Chrome session):",
+            font=("Segoe UI", 9, "bold")
+        ).grid(row=1, column=0, sticky=tk.W, pady=3)
 
         gmail_acc_var = tk.StringVar(value=self.config.get("gmail_account", "mohrawagdy58@gmail.com"))
-        tbs.Entry(google_box, textvariable=gmail_acc_var, width=32).grid(row=0, column=1, sticky=tk.W, pady=3, padx=6)
+        tbs.Entry(google_box, textvariable=gmail_acc_var, width=32).grid(row=1, column=1, sticky=tk.W, pady=3, padx=6)
 
         auto_sheet_var = tk.BooleanVar(value=self.config.get("auto_mark_sheet_done", True))
         tbs.Checkbutton(
@@ -992,11 +1212,11 @@ class MohraAppGUI:
             text="Auto-mark task as 'Done' in Google Sheet upon Readora success",
             variable=auto_sheet_var,
             bootstyle="success-round-toggle"
-        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=4)
+        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=4)
 
         # Verification status row inside dialog
         status_row = tbs.Frame(google_box)
-        status_row.grid(row=2, column=0, columnspan=2, fill=tk.X, pady=(4, 2))
+        status_row.grid(row=3, column=0, columnspan=2, fill=tk.X, pady=(4, 2))
 
         dlg_g_status = tbs.Label(
             status_row,
@@ -1032,7 +1252,7 @@ class MohraAppGUI:
             text="⚠️ STRICT RULE: Under NO circumstances will Google Sheet be opened or modified without verified login.",
             font=("Segoe UI", 8, "italic"),
             bootstyle="danger"
-        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
 
         # General Settings section
         gen_box = tbs.LabelFrame(pad_f, text=" 📖 General & Readora Settings ", bootstyle="secondary", padding=10)
@@ -1058,13 +1278,24 @@ class MohraAppGUI:
         btn_bar.pack(fill=tk.X, pady=(6, 0))
 
         def save_and_close():
+            assignee = assignee_var.get().strip()
+            if not assignee:
+                messagebox.showwarning(
+                    "Assignee Name Required",
+                    "Enter the teammate name used to claim PATCHes.",
+                    parent=dlg,
+                )
+                return
             self.config["groq_api_key"] = groq_key_var.get().strip()
             self.config["gmail_account"] = gmail_acc_var.get().strip()
+            self.config["assigned_to"] = assignee
             self.config["auto_mark_sheet_done"] = auto_sheet_var.get()
             self.config["question_header"] = header_var.get()
             self.config["readora_email"] = email_var.get().strip()
             self.config["readora_password"] = pass_var.get().strip()
             save_config(self.config)
+            self.sheet_parser.assigned_to = assignee.casefold()
+            self.lbl_claim_identity.config(text=f"Claiming as: {assignee}")
             self._check_google_session_async()
             self.log("[Settings] Configuration updated and saved to config.json.")
             messagebox.showinfo("Saved", "Settings successfully saved!", parent=dlg)

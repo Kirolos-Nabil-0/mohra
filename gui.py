@@ -757,7 +757,9 @@ class MohraAppGUI:
         self._filter_stories()
 
     def _filter_stories(self):
-        query = self.search_var.get().strip().lower()
+        from modules.title_utils import matches_search_query
+
+        query = self.search_var.get().strip()
         filter_mode = self.filter_var.get()
 
         for item in self.tree.get_children():
@@ -773,7 +775,7 @@ class MohraAppGUI:
                 continue
             if filter_mode == "Completed Only" and not is_done:
                 continue
-            if query and query not in s["story_name"].lower():
+            if query and not (matches_search_query(query, s["story_name"]) or matches_search_query(query, s.get("raw_story_name", ""))):
                 continue
 
             has_link = "✅  Yes" if s["drive_url"] else "–"
@@ -822,9 +824,20 @@ class MohraAppGUI:
         return None
 
     def _story_is_assigned_to_current_user(self, story: Dict) -> bool:
-        target = str(self.config.get("assigned_to", "")).strip().lower()
-        assigned_to = str(story.get("assigned_to", "")).strip().lower()
-        return bool(target and not story.get("assignment_conflict", False) and assigned_to == target)
+        target = str(self.config.get("assigned_to", "")).strip().casefold()
+        if not target:
+            return False
+        if story.get("assignment_conflict", False):
+            return False
+        assigned_to = str(story.get("assigned_to", "")).strip().casefold()
+        story_assigned_to = str(story.get("story_assigned_to", "")).strip().casefold()
+        vocab_assigned_to = str(story.get("vocab_assigned_to", "")).strip().casefold()
+        if assigned_to == target or story_assigned_to == target or vocab_assigned_to == target:
+            return True
+        for val in story.get("assignment_values", {}).values():
+            if str(val).strip().casefold() == target:
+                return True
+        return False
 
     def _open_claim_patch_dialog(self):
         owner = str(self.config.get("assigned_to", "")).strip()
@@ -966,6 +979,7 @@ class MohraAppGUI:
                             if claimed is None:
                                 continue
                             story["assigned_to"] = owner
+                            story["story_assigned_to"] = owner
                             story["assignment_columns"] = list(claimed.get("assignment_columns", ["C"]))
                             story["assignment_is_blank"] = False
                             story["assignment_conflict"] = False
@@ -1016,12 +1030,19 @@ class MohraAppGUI:
         if self._story_is_assigned_to_current_user(story):
             return False
         target = str(self.config.get("assigned_to", "")).strip() or "(not set)"
-        messagebox.showwarning(
-            "Task Not Assigned",
-            f"This task is not assigned to {target}.\n\n"
-            f"Only tasks assigned to {target} can be processed or updated.",
-            parent=self.root,
-        )
+        if story.get("assignment_conflict", False):
+            title = "Assignment Conflict"
+            msg = (
+                f"This task has an assignment conflict ({story.get('assigned_to')}).\n\n"
+                f"Please resolve the assignment conflict in the Google Sheet before processing."
+            )
+        else:
+            title = "Task Not Assigned"
+            msg = (
+                f"This task is not assigned to {target}.\n\n"
+                f"Only tasks assigned to {target} can be processed or updated."
+            )
+        messagebox.showwarning(title, msg, parent=self.root)
         return True
 
     def _on_story_step_complete(self, story: dict, success: bool, msg: str):

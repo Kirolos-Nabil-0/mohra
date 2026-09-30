@@ -39,9 +39,13 @@ class DriveDownloader:
     def _matches_story_name(name: str, story_name: Optional[str]) -> bool:
         if not story_name or DriveDownloader._has_second_language_label(name):
             return False
-        stem = re.sub(r"\.docx$", "", name, flags=re.IGNORECASE)
-        normalize = lambda value: "".join(ch for ch in value.casefold() if ch.isalnum())
-        return bool(normalize(stem)) and normalize(stem) == normalize(story_name)
+        from modules.title_utils import canonical_title_key, calculate_title_similarity
+        stem = re.sub(r"\.(docx?|gdoc)$", "", name, flags=re.IGNORECASE)
+        stem_canon = canonical_title_key(stem)
+        story_canon = canonical_title_key(story_name)
+        if stem_canon and story_canon and stem_canon == story_canon:
+            return True
+        return bool(stem_canon and story_canon) and calculate_title_similarity(stem, story_name) >= 0.88
 
     @staticmethod
     def _has_second_language_label(name: str) -> bool:

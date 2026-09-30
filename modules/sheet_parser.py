@@ -262,7 +262,8 @@ class SheetParser:
 
                 # Parse rows
                 header_cols = {}
-                assignment_columns = ["C"]
+                story_assign_col = "C"
+                vocab_assign_col = "E"
                 for row in s_root.findall(".//s:row", ns):
                     rows_scanned += 1
                     r_idx = int(row.attrib["r"])
@@ -296,32 +297,35 @@ class SheetParser:
                     if r_idx in (1, 2) and any("story" in str(v[0]).lower() for v in cols.values()):
                         for col_k, (col_v, _) in cols.items():
                             header_cols[col_k] = col_v.lower().strip()
-                        assignment_columns = [
+                        assign_cols = [
                             col_k for col_k, label in header_cols.items()
                             if re.sub(r"[^a-z]", "", label) in {"assignedto", "assigndto", "assignee"}
-                        ] or ["C"]
-                        assignment_columns.sort(key=lambda col: (len(col), col))
+                        ]
+                        assign_cols.sort(key=lambda col: (len(col), col))
+                        if "C" in assign_cols:
+                            story_assign_col = "C"
+                        elif assign_cols:
+                            story_assign_col = assign_cols[0]
+                        else:
+                            story_assign_col = "C"
+                        vocab_assign_col = next((c for c in assign_cols if c != story_assign_col), None)
                         continue
 
-                    assignment_values = {
-                        col: cols.get(col, ("", ""))[0]
-                        for col in assignment_columns
-                    }
-                    nonempty_assignments = [
-                        (col, value) for col, value in assignment_values.items() if value.strip()
-                    ]
-                    distinct_assignees = {value.strip().casefold() for _, value in nonempty_assignments}
-                    assignment_conflict = len(distinct_assignees) > 1
-                    if assignment_conflict:
-                        assigned_val = " / ".join(f"{col}: {value}" for col, value in nonempty_assignments)
-                    else:
-                        assigned_val = nonempty_assignments[0][1] if nonempty_assignments else ""
+                    assigned_val = cols.get(story_assign_col, ("", ""))[0].strip()
+                    vocab_assigned_val = cols.get(vocab_assign_col, ("", ""))[0].strip() if vocab_assign_col else ""
+
+                    assignment_values = {story_assign_col: assigned_val}
+                    if vocab_assign_col and vocab_assigned_val:
+                        assignment_values[vocab_assign_col] = vocab_assigned_val
+
                     story_val, story_link = cols.get("B", ("", ""))
                     comment_val = cols.get("D", ("", ""))[0]
                     assignment_matches = bool(
                         self.assigned_to
-                        and not assignment_conflict
-                        and assigned_val.strip().casefold() == self.assigned_to
+                        and (
+                            assigned_val.casefold() == self.assigned_to
+                            or vocab_assigned_val.casefold() == self.assigned_to
+                        )
                     )
 
                     if story_val.strip() and (self.include_all_assignments or assignment_matches):
@@ -332,19 +336,30 @@ class SheetParser:
                         folder_id = extract_drive_folder_id(drive_url)
                         is_done = "done" in comment_val.lower()
 
-                        clean_story_name = story_val.strip().replace("_", "'")
-                        clean_story_name = re.sub(r"\s+", " ", clean_story_name)
+                        from modules.title_utils import (
+                            clean_story_title,
+                            canonical_title_key,
+                            matches_search_query,
+                            calculate_title_similarity,
+                        )
+
+                        clean_story_name = clean_story_title(story_val)
+
+                        # Primary display: Story assignee; fallback to vocab assignee if story assignee is empty
+                        display_assigned = assigned_val or vocab_assigned_val
 
                         stories.append({
                             "sheet_name": sheet["name"],
                             "row_index": r_idx,
                             "story_name": clean_story_name,
                             "raw_story_name": story_val,
-                            "assigned_to": assigned_val,
-                            "assignment_columns": list(assignment_values),
+                            "assigned_to": display_assigned,
+                            "story_assigned_to": assigned_val,
+                            "vocab_assigned_to": vocab_assigned_val,
+                            "assignment_columns": [story_assign_col],
                             "assignment_values": assignment_values,
-                            "assignment_is_blank": not bool(nonempty_assignments),
-                            "assignment_conflict": assignment_conflict,
+                            "assignment_is_blank": not bool(assigned_val),
+                            "assignment_conflict": False,
                             "comment": comment_val,
                             "is_done": is_done,
                             "drive_url": drive_url,
@@ -364,14 +379,42 @@ class SheetParser:
         return [s for s in all_stories if not s["is_done"]]
 
     def find_story(self, name_query: str, force_refresh: bool = False) -> Optional[Dict]:
+        from modules.title_utils import (
+            canonical_title_key,
+            matches_search_query,
+            calculate_title_similarity,
+        )
+
         all_stories = self.parse_stories(force_download=force_refresh)
-        query = name_query.strip().lower()
-        # Exact match first
+        query = name_query.strip()
+        if not query:
+            return None
+
+        # 1. Exact canonical key match (resilient to dashes, apostrophes, commas, punctuation)
+        q_canon = canonical_title_key(query)
+        if q_canon:
+            for s in all_stories:
+                if canonical_title_key(s["story_name"]) == q_canon or canonical_title_key(s.get("raw_story_name", "")) == q_canon:
+                    return s
+
+        # 2. Resilient search query match (tokens, punctuation differences, substrings)
         for s in all_stories:
-            if s["story_name"].lower() == query:
+            if matches_search_query(query, s["story_name"]) or matches_search_query(query, s.get("raw_story_name", "")):
                 return s
-        # Substring match
+
+        # 3. High-confidence fuzzy similarity fallback
+        best_story = None
+        best_score = 0.0
         for s in all_stories:
-            if query in s["story_name"].lower():
-                return s
+            sim = max(
+                calculate_title_similarity(query, s["story_name"]),
+                calculate_title_similarity(query, s.get("raw_story_name", "")),
+            )
+            if sim > best_score:
+                best_score = sim
+                best_story = s
+
+        if best_story and best_score >= 0.80:
+            return best_story
+
         return None

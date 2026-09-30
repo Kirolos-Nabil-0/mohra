@@ -36,14 +36,29 @@ class ProgressTracker:
 
     def is_processed(self, story_name: str) -> bool:
         with self._lock:
-            entry = self.data["processed"].get(story_name.strip().lower())
-            return bool(entry and entry.get("status") == "SUCCESS" and not entry.get("dry_run"))
+            key = story_name.strip().lower()
+            entry = self.data["processed"].get(key)
+            if entry and entry.get("status") == "SUCCESS" and not entry.get("dry_run"):
+                return True
+
+            # Canonical key fallback to handle apostrophes, dashes, and special characters
+            from modules.title_utils import canonical_title_key
+            target_canon = canonical_title_key(story_name)
+            if target_canon:
+                for p_key, p_entry in self.data["processed"].items():
+                    stored_canon = p_entry.get("canonical_name") or canonical_title_key(p_entry.get("story_name", p_key))
+                    if stored_canon == target_canon:
+                        if p_entry.get("status") == "SUCCESS" and not p_entry.get("dry_run"):
+                            return True
+            return False
 
     def record_success(self, story: Dict, questions_count: int, dry_run: bool = False):
         with self._lock:
-            key = story["story_name"].strip().lower()
+            from modules.title_utils import clean_story_title, canonical_title_key
+            key = clean_story_title(story["story_name"]).lower()
             self.data["processed"][key] = {
                 "story_name": story["story_name"],
+                "canonical_name": canonical_title_key(story["story_name"]),
                 "sheet_name": story.get("sheet_name"),
                 "row_index": story.get("row_index"),
                 "status": "SUCCESS",
@@ -59,9 +74,11 @@ class ProgressTracker:
 
     def record_failure(self, story: Dict, error_message: str):
         with self._lock:
-            key = story["story_name"].strip().lower()
+            from modules.title_utils import clean_story_title, canonical_title_key
+            key = clean_story_title(story["story_name"]).lower()
             self.data["processed"][key] = {
                 "story_name": story["story_name"],
+                "canonical_name": canonical_title_key(story["story_name"]),
                 "sheet_name": story.get("sheet_name"),
                 "row_index": story.get("row_index"),
                 "status": "FAILED",

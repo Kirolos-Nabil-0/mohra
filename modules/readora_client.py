@@ -133,6 +133,13 @@ class ReadoraClient:
         return True
 
     def search_book(self, story_name: str) -> Optional[Dict]:
+        from modules.title_utils import (
+            clean_story_title,
+            canonical_title_key,
+            calculate_title_similarity,
+            generate_readora_search_queries,
+        )
+
         books_url = self.config.get("readora_books_url", "https://www.readoralab.com/super_admin/books")
         print(f"[ReadoraClient] Searching for book: '{story_name}'...")
         self.page.goto(books_url, timeout=25000)
@@ -141,57 +148,71 @@ class ReadoraClient:
         # Find search bar in header
         search_input = self.page.locator('header input, input[placeholder*="Search"]').first
         search_input.wait_for(state="visible", timeout=10000)
-        
-        # Clean title for searching (remove underscores, quotes)
-        clean_title = re.sub(r"[_']", " ", story_name)
-        clean_title = re.sub(r"\s+", " ", clean_title).strip()
 
-        search_input.fill(clean_title)
-        search_input.press("Enter")
-        self.page.wait_for_timeout(2000)
-        self.page.wait_for_load_state("networkidle")
+        queries = generate_readora_search_queries(story_name)
+        if not queries:
+            queries = [story_name]
 
-        # Inspect book cards in main (excluding edit buttons)
-        cards = self.page.locator('main a:not([href*="/edit"])')
-        count = cards.count()
-        if count == 0:
-            print(f"[ReadoraClient] No search results found for '{clean_title}'.")
-            return None
+        best_overall_match = None
+        best_overall_score = 0.0
 
-        titles = []
-        for i in range(count):
-            txt = cards.nth(i).inner_text().strip()
-            href = cards.nth(i).get_attribute("href") or ""
-            titles.append((i, txt, href))
+        for attempt_idx, q in enumerate(queries, 1):
+            if attempt_idx > 1:
+                print(f"[ReadoraClient] Trying alternative search query ({attempt_idx}/{len(queries)}): '{q}'")
+            search_input.fill(q)
+            search_input.press("Enter")
+            self.page.wait_for_timeout(1500)
+            self.page.wait_for_load_state("networkidle")
 
-        # Best match
-        norm_query = clean_title.lower()
-        best_idx = None
-        best_score = 0.0
+            # Inspect book cards in main (excluding edit buttons)
+            cards = self.page.locator('main a:not([href*="/edit"])')
+            count = cards.count()
+            if count == 0:
+                continue
 
-        for idx, t, href in titles:
-            norm_t = t.lower()
-            if norm_query in norm_t or norm_t in norm_query:
-                best_idx = idx
+            titles = []
+            for i in range(count):
+                txt = cards.nth(i).inner_text().strip()
+                href = cards.nth(i).get_attribute("href") or ""
+                titles.append((i, txt, href))
+
+            exact_match = None
+            for idx, txt, href in titles:
+                # 1. Exact canonical key match (strips punctuation, quotes, dashes)
+                if canonical_title_key(story_name) == canonical_title_key(txt):
+                    exact_match = (idx, txt, href, 1.0)
+                    break
+                sim = calculate_title_similarity(story_name, txt)
+                if sim > best_overall_score:
+                    best_overall_score = sim
+                    best_overall_match = (idx, txt, href, sim)
+
+            if exact_match:
+                best_overall_match = exact_match
+                best_overall_score = 1.0
                 break
-            score = difflib.SequenceMatcher(None, norm_query, norm_t).ratio()
-            if score > best_score:
-                best_score = score
-                best_idx = idx
 
-        if best_idx is not None:
-            matched_title = titles[best_idx][1]
-            matched_href = titles[best_idx][2]
-            print(f"[ReadoraClient] Found matching book: '{matched_title}' (Index {best_idx})")
-            
-            edit_url = f"https://www.readoralab.com{matched_href}/edit" if matched_href.startswith("/") else f"https://www.readoralab.com/super_admin/books/{matched_href}/edit"
+            # If a very high confidence match is found, no need to keep trying weaker queries
+            if best_overall_score >= 0.88:
+                break
+
+        if best_overall_match and best_overall_score >= 0.75:
+            best_idx, matched_title, matched_href, score = best_overall_match
+            print(f"[ReadoraClient] Found matching book: '{matched_title}' (Score {score:.2f}, Index {best_idx})")
+
+            edit_url = (
+                f"https://www.readoralab.com{matched_href}/edit"
+                if matched_href.startswith("/")
+                else f"https://www.readoralab.com/super_admin/books/{matched_href}/edit"
+            )
 
             return {
                 "matched_title": matched_title,
                 "card_index": best_idx,
-                "edit_url": edit_url
+                "edit_url": edit_url,
             }
 
+        print(f"[ReadoraClient] No search results found for '{story_name}' on Readora.")
         return None
 
     def open_book_edit(self, book_info: Dict) -> bool:

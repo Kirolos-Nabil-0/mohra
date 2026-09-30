@@ -159,9 +159,20 @@ class StoryAutomationWorker(BaseWorker):
             questions = DocxParser.parse_comprehension_questions(docx_path)
 
             # AI Fallback: If 0 questions or missing answers, and Groq available:
-            if not questions and not DocxParser.has_vocabulary_quiz(docx_path) and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(self.config):
-                self.log(f"0 questions parsed by rules. Triggering Groq AI full extraction for '{story_name}'...", level="INFO")
-                ai_full = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, self.config)
+            if not questions and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(self.config):
+                self.log(f"0 questions parsed by rules. Triggering Groq AI extraction for '{story_name}'...", level="INFO")
+                section_text = None
+                if DocxParser.has_vocabulary_quiz(docx_path):
+                    try:
+                        paras = DocxParser.extract_paragraphs(docx_path)
+                        v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), len(paras))
+                        c_start = next((i for i, line in enumerate(paras[:v_start]) if DocxParser.COMPREHENSION_HEADING.search(line)), -1)
+                        comp_slice = paras[c_start + 1:v_start]
+                        if comp_slice:
+                            section_text = "\n".join(comp_slice)
+                    except Exception:
+                        pass
+                ai_full = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, self.config, section_text=section_text)
                 if ai_full.get("success") and ai_full.get("questions"):
                     questions = ai_full["questions"]
                     self.log(f"⚡ Groq AI successfully extracted {len(questions)} questions from '{docx_path.name}'!")

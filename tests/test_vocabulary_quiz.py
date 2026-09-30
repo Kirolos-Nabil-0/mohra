@@ -133,6 +133,32 @@ class VocabularyQuizTests(unittest.TestCase):
         self.assertTrue(ReadoraClient._questions_match(wanted, [dict(wanted[0])]))
         self.assertFalse(ReadoraClient._questions_match(wanted, [{**wanted[0], "answer": "B"}]))
 
+    def test_split_line_comprehension_with_trailing_answer_key(self):
+        data = make_docx([
+            "Comprehension Questions",
+            "Why do children love exercising?",
+            "A. It is boring B. It is fun and keeps them healthy ✅ C. They are forced D. No reason",
+            "What is the best way to stay fit?",
+            "A. Sleep all day B. Eat junk food C. Daily physical activity D. Watch TV",
+            "Answer Key",
+            "1. B",
+            "2. C",
+            "Vocabulary Quiz",
+            "In the text, active means...",
+            "A. sleeping B. moving around C. quiet D. still",
+            "Answer: B",
+        ])
+        comp = DocxParser.parse_comprehension_questions(data)
+        self.assertEqual(len(comp), 2)
+        self.assertEqual(comp[0]["answer"], "B")
+        self.assertEqual(comp[1]["answer"], "C")
+        self.assertTrue(DocxParser.validate_questions(comp)["is_valid"])
+
+        vocab = DocxParser.parse_vocabulary_questions(data)
+        self.assertEqual(len(vocab), 1)
+        self.assertEqual(vocab[0]["answer"], "B")
+        self.assertTrue(DocxParser.validate_questions(vocab)["is_valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

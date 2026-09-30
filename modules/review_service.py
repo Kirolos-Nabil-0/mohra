@@ -100,15 +100,27 @@ def prepare_story_review(
 
     if (len(questions) == 0 or has_missing_keys) and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(config):
         if len(questions) == 0:
-            # A full-document AI extraction can merge the vocabulary quiz into comprehension.
-            if vocab_present:
-                return {"success": False, "story": story, "error": "Comprehension Questions could not be parsed separately from Vocabulary Quiz", "questions": [], "docx_path": str(docx_path)}
             if on_status:
                 on_status("⚡ AI Auto-Worker: Regex found 0 questions. Auto-extracting via Groq AI...")
-            ai_extract = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, config)
+            # If a vocabulary quiz is present, isolate the comprehension section to avoid mixing them
+            section_text = None
+            if vocab_present:
+                try:
+                    paras = DocxParser.extract_paragraphs(docx_path)
+                    v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), len(paras))
+                    c_start = next((i for i, line in enumerate(paras[:v_start]) if DocxParser.COMPREHENSION_HEADING.search(line)), -1)
+                    comp_slice = paras[c_start + 1:v_start]
+                    if comp_slice:
+                        section_text = "\n".join(comp_slice)
+                except Exception:
+                    pass
+
+            ai_extract = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, config, section_text=section_text)
             if ai_extract.get("success") and ai_extract.get("questions"):
                 questions = ai_extract["questions"]
                 status_msg = f"{status_msg} (⚡ Groq AI auto-extracted {len(questions)} questions)"
+            elif vocab_present and not questions:
+                return {"success": False, "story": story, "error": "Comprehension Questions could not be parsed separately from Vocabulary Quiz", "questions": [], "docx_path": str(docx_path)}
         elif has_missing_keys:
             missing_count = sum(1 for q in questions if not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"])
             if on_status:

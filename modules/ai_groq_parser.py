@@ -339,17 +339,21 @@ class GroqAnswerResolver:
     def extract_all_questions_with_groq(
         cls,
         docx_source: Union[str, Path, bytes],
-        config: Optional[dict] = None
+        config: Optional[dict] = None,
+        section_text: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         When standard regex finds 0 questions (e.g. non-standard structure or tables),
-        Groq extracts all comprehension questions, choices, and answers from the full document.
+        Groq extracts all comprehension questions, choices, and answers from the document or section text.
         """
         api_key = cls.get_api_key(config)
         if not api_key or not GROQ_AVAILABLE:
             return {"success": False, "error": "Groq not available or API key missing", "questions": []}
 
-        styled_doc = cls.extract_rich_styled_text(docx_source)
+        if section_text and section_text.strip():
+            styled_doc = section_text.strip()
+        else:
+            styled_doc = cls.extract_rich_styled_text(docx_source)
         if not styled_doc:
             return {"success": False, "error": "Could not read docx text content", "questions": []}
 

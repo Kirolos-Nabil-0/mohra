@@ -11,7 +11,11 @@ class DocxParser:
         r"(?:Vocabulary|Vocab)\s+(?:Quiz(?:\s+Questions)?|Questions|Test)\s*:?$",
         re.IGNORECASE,
     )
-    COMPREHENSION_HEADING = re.compile(r"^Comprehension\s+Questions\s*:?$", re.IGNORECASE)
+    COMPREHENSION_HEADING = re.compile(
+        r"^(?:(?:Cambridge\s+EFL|Grade\s+\d+(?:\s*\([^)]*\))?|Reading)\s+)?"
+        r"(?:Comprehension|Reading\s+Comprehension)\s+(?:Questions|Quiz|Test|Check)?\s*:?$",
+        re.IGNORECASE,
+    )
 
     @staticmethod
     def extract_paragraphs(docx_source: Union[str, Path, bytes]) -> List[str]:
@@ -56,24 +60,26 @@ class DocxParser:
         if start is None:
             return []
         section = paragraphs[start + 1:]
-        # Some files put a quoted sentence between a numbered question and all
-        # four inline choices. Join only that recognizable three-line layout.
-        merged = []
-        i = 0
-        while i < len(section):
-            if re.match(r"^\d+[.\)]\s*", section[i]):
-                choice_idx = next((j for j in range(i + 1, min(i + 4, len(section)))
-                                   if re.match(r"^A[.\)]\s*", section[j]) and re.search(r"\bD[.\)]\s*", section[j])), None)
-                if choice_idx is not None:
-                    merged.append(" ".join(section[i:choice_idx + 1]))
-                    i = choice_idx + 1
-                    continue
-            merged.append(section[i])
-            i += 1
-        return cls._parse_questions(merged, require_answer=True)
+        return cls._parse_questions(section, require_answer=True)
 
     @classmethod
     def _parse_questions(cls, paragraphs: List[str], require_answer: bool = False) -> List[Dict]:
+        ans_key_map = {}
+        for idx, p in enumerate(paragraphs):
+            if re.match(r"^(?:Answer\s+Key|Answers|Keys)\s*:?$", p.strip(), re.IGNORECASE):
+                for sub_line in paragraphs[idx + 1:idx + 35]:
+                    cleaned = sub_line.strip()
+                    if not cleaned or re.match(r"^(?:#|Word|Part of Speech|Target\s+Vocabulary|Comprehension|Vocabulary)", cleaned, re.IGNORECASE):
+                        break
+                    m = re.match(r"^(?:(?:Q\d+|\d+)[\.\:\-\)]\s*)?([A-D])\b", cleaned, re.IGNORECASE)
+                    if m:
+                        ans_key_map[len(ans_key_map) + 1] = m.group(1).upper()
+                    else:
+                        inline_pairs = re.findall(r"(?:(?:Q\d+|\d+)[\.\:\-\)]\s*)?([A-D])\b", cleaned, re.IGNORECASE)
+                        for item in inline_pairs:
+                            ans_key_map[len(ans_key_map) + 1] = item.upper()
+                break
+
         questions = []
         i = 0
         n = len(paragraphs)
@@ -84,11 +90,12 @@ class DocxParser:
                 i += 1
                 continue
 
+            if re.match(r"^(?:Answer\s+Key|Answers|Keys)\s*:?$", line, re.IGNORECASE):
+                break
+
             # Case 1: Single line containing Question + Choices (A... B... C...)
-            # We look for A. / A) with B. / B) and C. / C)
             if re.search(r"(?:\s*|\b)A[\.\)]\s*.+?\bB[\.\)]\s*.+?\bC[\.\)]\s*", line):
                 full_text = line
-                # Look ahead: If the immediate next line is "Answer: X", join it
                 if i + 1 < n and re.match(r"^(?:Correct\s+answer|Answer|Ans|Key)[\s:]*[A-D]\b", paragraphs[i + 1].strip(), re.IGNORECASE):
                     full_text = full_text + " " + paragraphs[i + 1].strip()
                     i += 1
@@ -99,8 +106,25 @@ class DocxParser:
                 i += 1
                 continue
 
-            # Case 2: Multi-line question block
-            # Current line is question title, followed by separate lines for choices (A., B., C., D.)
+            # Case 2: Multi-line where choices are inline on an upcoming line within 1 to 3 lines
+            inline_choice_idx = next(
+                (j for j in range(i + 1, min(i + 4, n))
+                 if re.match(r"^\s*A[\.\)]\s*", paragraphs[j]) and re.search(r"\bB[\.\)]\s*", paragraphs[j]) and re.search(r"\bC[\.\)]\s*", paragraphs[j])),
+                None
+            )
+            if inline_choice_idx is not None:
+                combined = " ".join(paragraphs[i:inline_choice_idx + 1])
+                advance_to = inline_choice_idx + 1
+                if inline_choice_idx + 1 < n and re.match(r"^(?:Correct\s+answer|Answer|Ans|Key)[\s:]*[A-D]\b", paragraphs[inline_choice_idx + 1].strip(), re.IGNORECASE):
+                    combined = combined + " " + paragraphs[inline_choice_idx + 1].strip()
+                    advance_to = inline_choice_idx + 2
+                q_obj = cls._parse_single_line_q(combined, len(questions) + 1, require_answer)
+                if q_obj:
+                    questions.append(q_obj)
+                    i = advance_to
+                    continue
+
+            # Case 3: Multi-line question block with choices on separate lines (A., B., C., D.)
             if i + 1 < n and re.match(r"^[A-Da-d][\.\)]\s*", paragraphs[i + 1].strip()):
                 q_title = line
                 choices_dict = {}
@@ -112,7 +136,6 @@ class DocxParser:
                     if m_c:
                         letter = m_c.group(1).upper()
                         text = m_c.group(2).strip()
-                        # Detect (Correct answer) / (correct) in option text
                         if re.search(r"\((?:correct(?:\s+answer)?)\)", text, re.IGNORECASE):
                             ans = letter
                             text = re.sub(r"\((?:correct(?:\s+answer)?)\)", "", text, flags=re.IGNORECASE).strip()
@@ -149,6 +172,12 @@ class DocxParser:
                     continue
 
             i += 1
+
+        for q in questions:
+            num = q.get("num")
+            if num in ans_key_map:
+                if q.get("answer") is None or (not require_answer and q.get("answer") == "A"):
+                    q["answer"] = ans_key_map[num]
 
         return questions
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+from difflib import SequenceMatcher
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -33,9 +34,16 @@ class DocxParser:
                 xml_content = z.read("word/document.xml")
                 root = ET.fromstring(xml_content)
                 for p in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
-                    text = "".join(t.text or "" for t in p.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")).strip()
-                    if text:
-                        paragraphs.append(text)
+                    parts = []
+                    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+                    for node in p.iter():
+                        if node.tag == namespace + "t":
+                            parts.append(node.text or "")
+                        elif node.tag in (namespace + "br", namespace + "cr"):
+                            parts.append("\n")
+                        elif node.tag == namespace + "tab":
+                            parts.append(" ")
+                    paragraphs.extend(line.strip() for line in "".join(parts).splitlines() if line.strip())
         finally:
             if isinstance(docx_source, (str, Path)):
                 f_in.close()
@@ -43,24 +51,112 @@ class DocxParser:
         return paragraphs
 
     @classmethod
-    def parse_comprehension_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
+    def heading_kind(cls, line: str) -> Optional[str]:
+        """Recognize standalone section labels without matching question prose."""
+        label = re.sub(r"\s+", " ", line.replace("\u00a0", " ")).strip()
+        label = re.sub(r"^[\s#*•✅📚📖]+", "", label)
+        explicitly_labelled = bool(re.match(r"^(?:section|part)\s+", label, re.I))
+        label = re.sub(r"^(?:(?:section|part)\s+(?:[A-Z]|\d+|[IVX]+)|\d+)[.):\s–—-]+", "", label, flags=re.I)
+        label = label.strip(" *:#–—-")
+        # Common export labels: 'Vocabulary Quiz (10 questions)' / '... - Grade 5'.
+        label = re.sub(r"\s*(?:\(\d+\s+questions?\)|[-–—:]\s*Grade\s+\d+)\s*$", "", label, flags=re.I)
+        if cls.VOCAB_HEADING.fullmatch(label) or (explicitly_labelled and re.fullmatch(r"(?:Vocabulary|Vocab)", label, re.I)):
+            return "vocabulary"
+        if cls.COMPREHENSION_HEADING.fullmatch(label) or re.fullmatch(r"(?:Reading\s+)?Comprehension", label, re.I):
+            return "comprehension"
+        return cls._fuzzy_heading_kind(label, explicitly_labelled)
+
+    @staticmethod
+    def _fuzzy_heading_kind(label: str, explicitly_labelled: bool) -> Optional[str]:
+        """Accept small spelling errors in short labels, never partial prose matches.
+
+        Require equal word counts, >=85% similarity for every word and >=90%
+        overall similarity. Ambiguous labels remain unclassified.
+        """
+        label = re.sub(
+            r"^(?:Cambridge\s+EFL|Grade\s+\d+(?:\s*\([^)]*\))?)\s+",
+            "", label, flags=re.I,
+        ).casefold()
+        if len(label) > 64 or not re.fullmatch(r"[a-z]+(?: [a-z]+){0,3}", label):
+            return None
+        words = label.split()
+        templates = {
+            "comprehension": [
+                "comprehension", "reading comprehension",
+                *[f"{prefix}{suffix}" for prefix in ("comprehension ", "reading comprehension ")
+                  for suffix in ("questions", "quiz", "test", "check")],
+            ],
+            "vocabulary": [
+                f"{prefix} {suffix}" for prefix in ("vocabulary", "vocab")
+                for suffix in ("quiz", "quiz questions", "questions", "test")
+            ],
+        }
+        if explicitly_labelled:
+            templates["vocabulary"].extend(("vocabulary", "vocab"))
+        matches = set()
+        for kind, headings in templates.items():
+            for heading in headings:
+                target = heading.split()
+                if len(words) != len(target):
+                    continue
+                if all(SequenceMatcher(None, word, expected).ratio() >= 0.85
+                       for word, expected in zip(words, target)) and \
+                        SequenceMatcher(None, label, heading).ratio() >= 0.90:
+                    matches.add(kind)
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    @classmethod
+    def extract_question_sections(cls, docx_source: Union[str, Path, bytes]) -> Dict:
+        """Collect bounded sections in document order, regardless of quiz order.
+
+        Unlabelled content before the first quiz remains comprehension for legacy
+        documents. Content after a labelled quiz belongs only to that quiz.
+        """
         paragraphs = cls.extract_paragraphs(docx_source)
-        vocab_start = next((i for i, line in enumerate(paragraphs) if cls.VOCAB_HEADING.search(line)), len(paragraphs))
-        comprehension_start = next((i for i, line in enumerate(paragraphs[:vocab_start]) if cls.COMPREHENSION_HEADING.search(line)), -1)
-        return cls._parse_questions(paragraphs[comprehension_start + 1:vocab_start])
+        sections = {"comprehension": [], "vocabulary": [], "vocab_present": False}
+        current = "comprehension"
+        block = []
+        for line in paragraphs:
+            kind = cls.heading_kind(line)
+            if kind:
+                if block:
+                    sections[current].append(block)
+                block = []
+                current = kind
+                if kind == "vocabulary":
+                    sections["vocab_present"] = True
+            else:
+                block.append(line)
+        if block:
+            sections[current].append(block)
+        return sections
+
+    @classmethod
+    def question_section_text(cls, docx_source: Union[str, Path, bytes], kind: str) -> str:
+        sections = cls.extract_question_sections(docx_source)
+        return "\n\n".join("\n".join(block) for block in sections[kind])
+
+    @classmethod
+    def _parse_section(cls, docx_source, kind):
+        questions = []
+        for block in cls.extract_question_sections(docx_source)[kind]:
+            questions.extend(cls._parse_questions(block, require_answer=kind == "vocabulary"))
+        for num, question in enumerate(questions, 1):
+            question["num"] = num
+            question["question"] = f"{num}. {question['raw_question']}"
+        return questions
+
+    @classmethod
+    def parse_comprehension_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
+        return cls._parse_section(docx_source, "comprehension")
 
     @classmethod
     def has_vocabulary_quiz(cls, docx_source: Union[str, Path, bytes]) -> bool:
-        return any(cls.VOCAB_HEADING.search(line) for line in cls.extract_paragraphs(docx_source))
+        return cls.extract_question_sections(docx_source)["vocab_present"]
 
     @classmethod
     def parse_vocabulary_questions(cls, docx_source: Union[str, Path, bytes]) -> List[Dict]:
-        paragraphs = cls.extract_paragraphs(docx_source)
-        start = next((i for i, line in enumerate(paragraphs) if cls.VOCAB_HEADING.search(line)), None)
-        if start is None:
-            return []
-        section = paragraphs[start + 1:]
-        return cls._parse_questions(section, require_answer=True)
+        return cls._parse_section(docx_source, "vocabulary")
 
     @classmethod
     def _parse_questions(cls, paragraphs: List[str], require_answer: bool = False) -> List[Dict]:

@@ -163,15 +163,7 @@ class StoryAutomationWorker(BaseWorker):
                 self.log(f"0 questions parsed by rules. Triggering Groq AI extraction for '{story_name}'...", level="INFO")
                 section_text = None
                 if DocxParser.has_vocabulary_quiz(docx_path):
-                    try:
-                        paras = DocxParser.extract_paragraphs(docx_path)
-                        v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), len(paras))
-                        c_start = next((i for i, line in enumerate(paras[:v_start]) if DocxParser.COMPREHENSION_HEADING.search(line)), -1)
-                        comp_slice = paras[c_start + 1:v_start]
-                        if comp_slice:
-                            section_text = "\n".join(comp_slice)
-                    except Exception:
-                        pass
+                    section_text = DocxParser.question_section_text(docx_path, "comprehension")
                 ai_full = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, self.config, section_text=section_text)
                 if ai_full.get("success") and ai_full.get("questions"):
                     questions = ai_full["questions"]

@@ -30,6 +30,7 @@ datas += ttk_datas + playwright_datas + docx_datas + openpyxl_datas + groq_datas
 binaries = [] + ttk_binaries + playwright_binaries + docx_binaries + openpyxl_binaries + groq_binaries
 
 hiddenimports = [
+    'gui',
     'playwright',
     'playwright.sync_api',
     'playwright._impl._driver',
@@ -57,7 +58,7 @@ hiddenimports = [
 hiddenimports = list(dict.fromkeys(hiddenimports))
 
 a = Analysis(
-    ['gui.py'],
+    ['app_bootstrap.py'],
     pathex=['.'],
     binaries=binaries,
     datas=datas,

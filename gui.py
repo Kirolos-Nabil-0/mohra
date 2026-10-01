@@ -29,7 +29,6 @@ from modules.workers import (
     SheetWatcherWorker,
     AutoUpdaterWorker,
 )
-from modules.key import KeyWorker
 from modules.telegram_service import Send_tele_msg
 from modules.gui_review_dialog import DryRunReviewDialog
 
@@ -418,10 +417,26 @@ class MohraAppGUI:
                 foreground="#ff7b72",
             )
 
-    def log(self, message: str):
-        """Appends log text directly to the UI console with color tagging."""
+    def log(self, message: str, level: Optional[str] = None):
+        """Appends log text directly to the UI console with color tagging in a thread-safe way."""
+        if threading.current_thread() != threading.main_thread():
+            self.root.after(0, self.log, message, level)
+            return
+
         msg_lower = message.lower()
-        if "[error" in msg_lower or "error" in msg_lower:
+        if level:
+            lvl = level.lower()
+            if "error" in lvl:
+                tag = "error"
+            elif "warn" in lvl:
+                tag = "warn"
+            elif "info" in lvl:
+                tag = "info"
+            elif "success" in lvl:
+                tag = "success"
+            else:
+                tag = "info"
+        elif "[error" in msg_lower or "error" in msg_lower:
             tag = "error"
         elif "success" in msg_lower or "complete" in msg_lower or "done" in msg_lower:
             tag = "success"
@@ -511,15 +526,6 @@ class MohraAppGUI:
                 self.log(f"[Background] AutoUpdaterWorker started (check interval: {update_interval}s).")
             except Exception as e:
                 self.log(f"[Background] Notice starting AutoUpdaterWorker: {e}", level="WARNING")
-
-        # 4. Key & Tele Module (if enabled)
-        if self.config.get("key_module_enabled", True) and self.config.get("key_module_run_on_startup", True):
-            try:
-                key_worker = KeyWorker(config=self.config, name="KeyWorker")
-                self.manager.register_and_start(key_worker)
-                self.log("[Background] KeyWorker started in background.")
-            except Exception as e:
-                self.log(f"[Background] Notice starting KeyWorker: {e}", level="INFO")
 
         # 5. Check Google Account session status (Strict Safety Rule verification)
         self.root.after(1200, self._check_google_session_async)

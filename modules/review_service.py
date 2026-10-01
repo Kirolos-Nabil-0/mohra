@@ -105,15 +105,7 @@ def prepare_story_review(
             # If a vocabulary quiz is present, isolate the comprehension section to avoid mixing them
             section_text = None
             if vocab_present:
-                try:
-                    paras = DocxParser.extract_paragraphs(docx_path)
-                    v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), len(paras))
-                    c_start = next((i for i, line in enumerate(paras[:v_start]) if DocxParser.COMPREHENSION_HEADING.search(line)), -1)
-                    comp_slice = paras[c_start + 1:v_start]
-                    if comp_slice:
-                        section_text = "\n".join(comp_slice)
-                except Exception:
-                    pass
+                section_text = DocxParser.question_section_text(docx_path, "comprehension")
 
             ai_extract = GroqAnswerResolver.extract_all_questions_with_groq(docx_path, config, section_text=section_text)
             if ai_extract.get("success") and ai_extract.get("questions"):

@@ -350,10 +350,14 @@ class GroqAnswerResolver:
         if not api_key or not GROQ_AVAILABLE:
             return {"success": False, "error": "Groq not available or API key missing", "questions": []}
 
-        if section_text and section_text.strip():
+        if section_text is not None:
             styled_doc = section_text.strip()
         else:
-            styled_doc = cls.extract_rich_styled_text(docx_source)
+            from modules.docx_parser import DocxParser
+            if DocxParser.has_vocabulary_quiz(docx_source):
+                styled_doc = DocxParser.question_section_text(docx_source, "comprehension")
+            else:
+                styled_doc = cls.extract_rich_styled_text(docx_source)
         if not styled_doc:
             return {"success": False, "error": "Could not read docx text content", "questions": []}
 
@@ -455,20 +459,10 @@ class GroqAnswerResolver:
         if not api_key or not GROQ_AVAILABLE:
             return {"success": False, "error": "Groq not available or API key missing", "questions": []}
 
-        styled_doc = cls.extract_rich_styled_text(docx_source)
-        if not styled_doc:
-            return {"success": False, "error": "Could not read docx text content", "questions": []}
-
-        try:
-            from modules.docx_parser import DocxParser
-            paras = DocxParser.extract_paragraphs(docx_source)
-            v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), -1)
-            if v_start != -1:
-                section_text = "\n".join(paras[v_start:])
-                if section_text.strip():
-                    styled_doc = section_text
-        except Exception:
-            pass
+        from modules.docx_parser import DocxParser
+        styled_doc = DocxParser.question_section_text(docx_source, "vocabulary")
+        if not styled_doc.strip():
+            return {"success": False, "error": "No vocabulary section text found", "questions": []}
 
         model_name = (config or {}).get("groq_model", "llama-3.3-70b-versatile")
         client = Groq(api_key=api_key)

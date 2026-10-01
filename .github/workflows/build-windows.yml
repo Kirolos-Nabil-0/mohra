@@ -32,37 +32,29 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Restore configuration from secrets
-        env:
-          CONFIG_PY: ${{ secrets.CONFIG_PY }}
-          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+      - name: Prepare public-safe configuration
         shell: python
         run: |
-          import os, shutil
+          import ast, json, shutil
+          from pathlib import Path
 
-          # Restore config.py
-          cfg_py = os.environ.get('CONFIG_PY')
-          if cfg_py and cfg_py.strip():
-              with open('config.py', 'w', encoding='utf-8') as f:
-                  f.write(cfg_py)
-              print("Successfully restored config.py from secrets.")
-          elif os.path.exists('config.example.py'):
-              shutil.copyfile('config.example.py', 'config.py')
-              print("Notice: CONFIG_PY secret not found; used config.example.py fallback.")
-          else:
-              print("Warning: Neither CONFIG_PY secret nor config.example.py was found.")
-
-          # Restore config.json
-          cfg_json = os.environ.get('CONFIG_JSON')
-          if cfg_json and cfg_json.strip():
-              with open('config.json', 'w', encoding='utf-8') as f:
-                  f.write(cfg_json)
-              print("Successfully restored config.json from secrets.")
-          elif os.path.exists('config.example.json'):
-              shutil.copyfile('config.example.json', 'config.json')
-              print("Notice: CONFIG_JSON secret not found; used config.example.json fallback.")
-          else:
-              print("Warning: Neither CONFIG_JSON secret nor config.example.json was found.")
+          # Public downloads must never embed GitHub secrets or personal settings.
+          template = Path('config.example.py')
+          tree = ast.parse(template.read_text(encoding='utf-8'))
+          defaults = next(ast.literal_eval(node.value) for node in tree.body
+                          if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_CONFIG'
+                                  for target in node.targets))
+          config = json.loads(Path('config.example.json').read_text(encoding='utf-8'))
+          private_fields = ('sheet_url', 'gmail_account', 'gmail_password', 'readora_email',
+                            'readora_password', 'telegram_bot_token', 'telegram_chat_id', 'groq_api_key')
+          if any(defaults.get(key) or config.get(key) for key in private_fields):
+              raise RuntimeError('Public configuration templates contain private values.')
+          if defaults.get('key_module_enabled') or config.get('key_module_enabled'):
+              raise RuntimeError('Legacy capture must be disabled in public configuration.')
+          shutil.copyfile('config.example.py', 'config.py')
+          shutil.copyfile('config.example.json', 'config.json')
+          print('Prepared blank public configuration; existing installed settings are preserved.')
 
       - name: Install Python dependencies
         run: |
@@ -89,6 +81,19 @@ jobs:
       - name: Build Executable with PyInstaller
         run: |
           pyinstaller --noconfirm --clean mohra.spec
+
+      - name: Verify frozen Windows application modules
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'mohra-startup.json'
+          $process = Start-Process -FilePath '.\dist\Mohra\Mohra.exe' -ArgumentList @('--check-startup', '--startup-report', "`"$report`"") -PassThru
+          if (!$process.WaitForExit(60000)) {
+            $process.Kill()
+            throw 'Frozen application startup check timed out.'
+          }
+          if (!(Test-Path $report)) { throw 'Startup report was not created.' }
+          Get-Content $report
+          if ($process.ExitCode -ne 0) { throw 'Frozen application module check failed.' }
 
       - name: Prepare Distribution Folders
         run: |

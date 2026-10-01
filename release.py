@@ -127,7 +127,7 @@ def main() -> int:
             raise RuntimeError("Could not find the installer version in installer.iss.")
         INSTALLER_FILE.write_text(updated_text, encoding="utf-8")
 
-        git("add", "--", "release.py", "version.json", "installer.iss", "config.json")
+        git("add", "--", "release.py", "version.json", "installer.iss")
         git("commit", "-m", f"chore(release): v{new_version}")
         git("push", "origin", branch)
 

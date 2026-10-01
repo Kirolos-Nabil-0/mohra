@@ -24,6 +24,10 @@ chrome_profile/
 *.xlsx
 *.docx
 
+# Sensitive credentials & environment configuration
+config.json
+config.py
+
 # OS metadata
 .DS_Store
 Thumbs.db

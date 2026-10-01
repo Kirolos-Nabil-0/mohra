@@ -165,7 +165,7 @@ mohra/
 ├── tray_app.py            # Windows System Tray application
 ├── mohra_app.py           # Interactive CLI application
 ├── gui.py                 # Desktop Graphical Interface (Tkinter)
-├── config.py & config.json# Settings (credentials, URLs, modes, intervals)
+├── config.example.py & config.example.json # Configuration templates (local config.py & config.json are git-ignored)
 ├── setup.bat              # 1-Click setup script for Windows
 ├── update.bat             # 1-Click update checker for Windows
 ├── run.bat                # 1-Click CLI launcher for Windows

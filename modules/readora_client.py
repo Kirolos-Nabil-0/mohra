@@ -362,6 +362,120 @@ class ReadoraClient:
             "old_vocab_state": old_vocab_state,
         }
 
+    def _click_modal_save_button(self, modal_form) -> None:
+        """
+        Locates and clicks the 'UPDATE' or 'SAVE' button in the active question modal.
+        Searches within modal_form and the enclosing modal dialog / actions container,
+        using multi-tier clicking (standard, force, and JS evaluate) to guarantee execution.
+        """
+        print("\n[ReadoraClient] Saving questions: Locating 'UPDATE' or 'SAVE' button...")
+
+        # 1. Defocus / blur any active input to trigger MUI validation
+        try:
+            self.page.keyboard.press("Tab")
+            self.page.wait_for_timeout(200)
+        except Exception:
+            pass
+
+        # Candidate selectors in priority order
+        selectors = [
+            'button:has-text("UPDATE")',
+            'button:has-text("Update")',
+            'button:has-text("SAVE")',
+            'button:has-text("Save")',
+            'button:has-text("Save Changes")',
+            'button:has-text("Submit")',
+            'button[type="submit"]',
+        ]
+
+        btn = None
+
+        # Scope 1: Search inside modal_form
+        for sel in selectors:
+            candidate = modal_form.locator(sel).first
+            try:
+                if candidate.count() > 0 and candidate.is_visible():
+                    btn = candidate
+                    break
+            except Exception:
+                pass
+
+        # Scope 2: Search in the visible modal root or dialog actions container
+        if not btn:
+            modal_containers = self.page.locator(
+                '.MuiModal-root:visible, [role="dialog"]:visible, .MuiDialog-root:visible'
+            )
+            for sel in selectors:
+                candidate = modal_containers.locator(sel).first
+                try:
+                    if candidate.count() > 0 and candidate.is_visible():
+                        btn = candidate
+                        break
+                except Exception:
+                    pass
+
+        # Scope 3: Role-based search in visible modal dialogs
+        if not btn:
+            try:
+                candidate = self.page.get_by_role(
+                    "button", name=re.compile(r"^\s*(?:update|save|save\s+changes|submit)\s*$", re.IGNORECASE)
+                ).first
+                if candidate.count() > 0 and candidate.is_visible():
+                    btn = candidate
+            except Exception:
+                pass
+
+        if not btn:
+            raise RuntimeError("Could not find 'UPDATE' or 'SAVE' button in the Readora question dialog.")
+
+        btn_text = ""
+        try:
+            btn_text = btn.inner_text().strip()
+        except Exception:
+            pass
+        print(f"[ReadoraClient] Found save button ({btn_text or 'Update/Save'}). Clicking...")
+
+        try:
+            btn.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(200)
+
+        # Multi-tier click:
+        # 1. Standard click
+        # 2. Force click
+        # 3. JavaScript DOM click
+        clicked = False
+        last_click_error = None
+        for attempt_name, click_fn in [
+            ("Standard click", lambda: btn.click(timeout=5000)),
+            ("Force click", lambda: btn.click(force=True, timeout=5000)),
+            ("JavaScript DOM click", lambda: btn.evaluate("el => el.click()")),
+        ]:
+            try:
+                click_fn()
+                clicked = True
+                print(f"[ReadoraClient] {attempt_name} succeeded.")
+                break
+            except Exception as e:
+                last_click_error = e
+                print(f"[ReadoraClient] {attempt_name} failed: {e}")
+
+        if not clicked:
+            raise RuntimeError(f"Failed to click 'UPDATE' or 'SAVE' button in Readora dialog: {last_click_error}")
+
+        # Wait for modal to hide
+        try:
+            modal_form.wait_for(state="hidden", timeout=12000)
+        except Exception:
+            pass
+
+        self.page.wait_for_timeout(1000)
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+
     def edit_questions(self, questions: List[Dict], dry_run: bool = True, kind: str = "comprehension") -> bool:
         print(f"[ReadoraClient] Opening '{kind}' dialog ({len(questions)} questions to apply)...")
         modal_form = self._open_question_modal(kind)
@@ -459,12 +573,8 @@ class ReadoraClient:
             self.page.wait_for_timeout(500)
             return True
         else:
-            print("\n[ReadoraClient] Saving questions: Clicking 'UPDATE' button...")
-            update_btn = modal_form.locator('button:has-text("UPDATE")').first
-            update_btn.scroll_into_view_if_needed()
-            update_btn.click()
-            modal_form.wait_for(state="hidden", timeout=12000)
-            self.page.wait_for_load_state("networkidle")
+            self._click_modal_save_button(modal_form)
+            self.page.wait_for_timeout(1500)
             verification_form = self._open_question_modal(kind)
             saved_state = self.extract_current_modal_state(verification_form)
             self.page.keyboard.press("Escape")

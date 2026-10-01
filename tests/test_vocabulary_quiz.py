@@ -159,6 +159,150 @@ class VocabularyQuizTests(unittest.TestCase):
         self.assertEqual(vocab[0]["answer"], "B")
         self.assertTrue(DocxParser.validate_questions(vocab)["is_valid"])
 
+    def test_vocab_ignored_enables_validation_in_dialog(self):
+        import tkinter as tk
+        from modules.gui_review_dialog import DryRunReviewDialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            story = {"story_name": "The Big Debate", "sheet_name": "Grade 5", "row_index": 134, "drive_url": "https://drive.google.com/test"}
+            cfg = {"cache_dir": "./cache"}
+            dialog = DryRunReviewDialog(root, story, cfg)
+            dialog.comprehension_questions = [
+                {
+                    "num": 1,
+                    "question": "1. Test?",
+                    "raw_question": "Test?",
+                    "choices": [
+                        {"letter": "A", "text": "A. One"},
+                        {"letter": "B", "text": "B. Two"},
+                        {"letter": "C", "text": "C. Three"},
+                        {"letter": "D", "text": "D. Four"},
+                    ],
+                    "answer": "A"
+                }
+            ]
+            dialog.vocab_present = True
+            dialog.vocab_questions = []
+            dialog._vocab_ignored = False
+            dialog._refresh_validation()
+
+            # Initially disabled because vocab has 0 questions
+            self.assertEqual(str(dialog.btn_apply.cget("state")), tk.DISABLED)
+            self.assertEqual(str(dialog.btn_dry_run_test.cget("state")), tk.DISABLED)
+            self.assertEqual(dialog.lbl_vocab_status.cget("text"), "Vocabulary: needs correction")
+
+            # Toggle ignore vocabulary
+            dialog._toggle_ignore_vocab()
+            self.assertTrue(dialog._vocab_ignored)
+            self.assertEqual(str(dialog.btn_apply.cget("state")), tk.NORMAL)
+            self.assertEqual(str(dialog.btn_dry_run_test.cget("state")), tk.NORMAL)
+            self.assertIn("ignored", dialog.lbl_vocab_status.cget("text"))
+
+            # Toggle back to include vocabulary
+            dialog._toggle_ignore_vocab()
+            self.assertFalse(dialog._vocab_ignored)
+            self.assertEqual(str(dialog.btn_apply.cget("state")), tk.DISABLED)
+
+            dialog.destroy()
+        finally:
+            root.destroy()
+
+    def test_extract_vocab_questions_with_groq_mock(self):
+        import modules.ai_groq_parser as ai_module
+        from modules.ai_groq_parser import GroqAnswerResolver
+        from unittest.mock import MagicMock
+        data = make_docx(["Vocabulary Quiz", "1. Essential means...", "A. Crucial", "B. Small", "C. Fast", "D. Red", "Answer: A"])
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '''{
+            "questions": [
+                {
+                    "num": 1,
+                    "raw_question": "Essential means...",
+                    "choices": [
+                        {"letter": "A", "text": "Crucial"},
+                        {"letter": "B", "text": "Small"},
+                        {"letter": "C", "text": "Fast"},
+                        {"letter": "D", "text": "Red"}
+                    ],
+                    "answer": "A",
+                    "source": "Mock"
+                }
+            ]
+        }'''
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_groq_cls = MagicMock(return_value=mock_client)
+
+        with patch.object(GroqAnswerResolver, "get_api_key", return_value="fake_key"), \
+             patch.object(ai_module, "GROQ_AVAILABLE", True), \
+             patch.object(ai_module, "Groq", mock_groq_cls, create=True):
+            res = GroqAnswerResolver.extract_vocab_questions_with_groq(data, {})
+            self.assertTrue(res["success"])
+            self.assertEqual(res["count"], 1)
+            self.assertEqual(res["questions"][0]["answer"], "A")
+            self.assertEqual(len(res["questions"][0]["choices"]), 4)
+
+    def test_add_and_delete_question_in_dialog(self):
+        import tkinter as tk
+        from modules.gui_review_dialog import DryRunReviewDialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            story = {"story_name": "Test Story", "sheet_name": "Grade 5", "row_index": 1, "drive_url": "https://drive.google.com/test"}
+            cfg = {"cache_dir": "./cache"}
+            dialog = DryRunReviewDialog(root, story, cfg)
+            dialog.comprehension_questions = [
+                {"num": 1, "question": "1. Q1?", "raw_question": "Q1?", "choices": [{"letter": "A", "text": "A. 1"}, {"letter": "B", "text": "B. 2"}, {"letter": "C", "text": "C. 3"}, {"letter": "D", "text": "D. 4"}], "answer": "A"}
+            ]
+            dialog.questions = dialog.comprehension_questions
+            self.assertEqual(len(dialog.questions), 1)
+
+            # Add question
+            dialog._on_add_question()
+            self.assertEqual(len(dialog.questions), 2)
+            self.assertEqual(dialog.questions[1]["num"], 2)
+
+            # Delete question
+            dialog.selected_q_idx = 1
+            dialog._on_delete_question()
+            self.assertEqual(len(dialog.questions), 1)
+
+            dialog.destroy()
+        finally:
+            root.destroy()
+
+    def test_automatic_vocab_ai_fallback_in_prepare_review(self):
+        from modules.ai_groq_parser import GroqAnswerResolver
+        data = make_docx([
+            "Comprehension Questions",
+            "Why is the sky blue?",
+            "A. Light B. Air C. Water D. Stars",
+            "Answer: A",
+            "Vocabulary Quiz",
+            "Non standard unparseable vocabulary line",
+        ])
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "First_language.docx"
+            path.write_bytes(data)
+            story = {"story_name": "Test", "drive_url": "https://drive.google.com/test", "docx_path": str(path)}
+            cfg = {"cache_dir": directory, "groq_api_key": "fake_key"}
+
+            mock_vocab_q = [
+                {"num": 1, "question": "1. Word?", "raw_question": "Word?", "choices": [{"letter": "A", "text": "A. Def1"}, {"letter": "B", "text": "B. Def2"}, {"letter": "C", "text": "C. Def3"}, {"letter": "D", "text": "D. Def4"}], "answer": "B"}
+            ]
+            with patch.object(GroqAnswerResolver, "is_available", return_value=True), \
+                 patch.object(GroqAnswerResolver, "get_api_key", return_value="fake_key"), \
+                 patch.object(GroqAnswerResolver, "extract_vocab_questions_with_groq", return_value={"success": True, "questions": mock_vocab_q}):
+                res = review_service.prepare_story_review(story, cfg, download_if_missing=False)
+                self.assertTrue(res["success"])
+                self.assertTrue(res["vocab_present"])
+                self.assertEqual(len(res["vocab_questions"]), 1)
+                self.assertEqual(res["vocab_questions"][0]["answer"], "B")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

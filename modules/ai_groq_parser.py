@@ -443,3 +443,118 @@ class GroqAnswerResolver:
                 "error": f"Groq AI full extraction error: {str(e)}",
                 "questions": []
             }
+
+    @classmethod
+    def extract_vocab_questions_with_groq(
+        cls,
+        docx_source: Union[str, Path, bytes],
+        config: Optional[dict] = None
+    ) -> Dict[str, Any]:
+        """Extracts Vocabulary Quiz multiple-choice questions using Groq AI."""
+        api_key = cls.get_api_key(config)
+        if not api_key or not GROQ_AVAILABLE:
+            return {"success": False, "error": "Groq not available or API key missing", "questions": []}
+
+        styled_doc = cls.extract_rich_styled_text(docx_source)
+        if not styled_doc:
+            return {"success": False, "error": "Could not read docx text content", "questions": []}
+
+        try:
+            from modules.docx_parser import DocxParser
+            paras = DocxParser.extract_paragraphs(docx_source)
+            v_start = next((i for i, line in enumerate(paras) if DocxParser.VOCAB_HEADING.search(line)), -1)
+            if v_start != -1:
+                section_text = "\n".join(paras[v_start:])
+                if section_text.strip():
+                    styled_doc = section_text
+        except Exception:
+            pass
+
+        model_name = (config or {}).get("groq_model", "llama-3.3-70b-versatile")
+        client = Groq(api_key=api_key)
+
+        system_prompt = (
+            "You are an expert exam parser. Read the document text and extract all Vocabulary Quiz multiple-choice questions.\n"
+            "Rules:\n"
+            "1. Locate the Vocabulary Quiz / Vocabulary Questions section.\n"
+            "2. Identify every question and its 4 choices (A, B, C, D).\n"
+            "3. Determine the correct answer (A, B, C, or D):\n"
+            "   - Look for answer keys (e.g. 'Answer Key', 'Answers', 'Key').\n"
+            "   - Look for styling annotations like [HIGHLIGHT: ...], [UNDERLINE: ...], [COLOR_...], or '(correct answer)'.\n"
+            "   - If no indicator exists, determine the factually correct choice for vocabulary definition.\n"
+            "4. Return valid JSON ONLY matching this schema:\n"
+            "{\n"
+            '  "questions": [\n'
+            '    {\n'
+            '      "num": 1,\n'
+            '      "question": "1. What does essential mean?",\n'
+            '      "raw_question": "What does essential mean?",\n'
+            '      "choices": [\n'
+            '        {"letter": "A", "text": "A. Choice 1"},\n'
+            '        {"letter": "B", "text": "B. Choice 2"},\n'
+            '        {"letter": "C", "text": "C. Choice 3"},\n'
+            '        {"letter": "D", "text": "D. Choice 4"}\n'
+            '      ],\n'
+            '      "answer": "B",\n'
+            '      "source": "Found in footer: Answers: 1 is b"\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+
+        user_prompt = f"=== DOCUMENT CONTENT ===\n{styled_doc[:7500]}\n\nExtract all vocabulary quiz questions in structured JSON."
+
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=3000,
+            )
+            content = response.choices[0].message.content
+            parsed_json = json.loads(content)
+            q_list = parsed_json.get("questions", [])
+
+            formatted_questions = []
+            for i, q in enumerate(q_list):
+                q_num = q.get("num", i + 1)
+                raw_q = q.get("raw_question") or q.get("question", "")
+                raw_q = re.sub(r"^(?:Q\d+[\.\:]|\d+[\.\:])\s*", "", raw_q).strip()
+
+                choices = []
+                for c in q.get("choices", []):
+                    let = str(c.get("letter", "")).strip().upper()
+                    t = str(c.get("text", "")).strip()
+                    clean_t = re.sub(r"^[A-Da-d][\.\)]\s*", "", t).strip()
+                    choices.append({"letter": let, "text": f"{let}. {clean_t}"})
+
+                ans = str(q.get("answer", "A")).strip().upper()
+                if ans not in ["A", "B", "C", "D"]:
+                    ans = "A"
+
+                formatted_questions.append({
+                    "num": q_num,
+                    "question": f"{q_num}. {raw_q}",
+                    "raw_question": raw_q,
+                    "choices": choices,
+                    "answer": ans,
+                    "ai_extracted": True,
+                    "ai_source": q.get("source", "Groq AI")
+                })
+
+            return {
+                "success": True,
+                "questions": formatted_questions,
+                "count": len(formatted_questions)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Groq AI vocab extraction error: {str(e)}",
+                "questions": []
+            }
+

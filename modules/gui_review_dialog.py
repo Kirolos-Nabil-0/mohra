@@ -53,6 +53,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.comprehension_questions: List[Dict] = []
         self.vocab_questions: List[Dict] = []
         self.vocab_present = False
+        self._vocab_ignored = False
         self.old_state: Optional[Dict[str, Any]] = None  # Old questions (from Readora Lab)
         self.old_comprehension_state: Optional[Dict[str, Any]] = None
         self.old_vocab_state: Optional[Dict[str, Any]] = None
@@ -235,7 +236,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.btn_open_docx = tbs.Button(
             btn_box,
             text="📂 Open Docx File",
-            bootstyle="dark-outline",
+            bootstyle="info-outline",
             command=self._open_docx_externally,
             state=tk.DISABLED
         )
@@ -259,6 +260,14 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.section_picker.bind("<<ComboboxSelected>>", self._on_section_changed)
         self.lbl_vocab_status = tbs.Label(section_bar, text="Vocabulary: loading", bootstyle="secondary")
         self.lbl_vocab_status.pack(side=tk.LEFT, padx=12)
+
+        self.btn_toggle_vocab = tbs.Button(
+            section_bar,
+            text="Ignore Vocabulary Quiz",
+            bootstyle="warning-outline",
+            command=self._toggle_ignore_vocab,
+        )
+        # Packed conditionally in _refresh_validation
 
         # ── 3. Notebook Tabs: [Diff (Old vs New)] | [New Editor] | [Old Readora] ──
         self.notebook = ttk.Notebook(self)
@@ -302,6 +311,14 @@ class DryRunReviewDialog(tbs.Toplevel):
         btn_frame = tbs.Frame(self, padding=(14, 10))
         btn_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
 
+        self.lbl_btn_hint = tbs.Label(
+            btn_frame,
+            text="",
+            font=("Segoe UI", 9, "italic"),
+            bootstyle="warning"
+        )
+        self.lbl_btn_hint.pack(side=tk.LEFT, padx=6)
+
         self.btn_apply = tbs.Button(
             btn_frame,
             text="🚀  Accept & Apply to Readora",
@@ -320,12 +337,13 @@ class DryRunReviewDialog(tbs.Toplevel):
         )
         self.btn_dry_run_test.pack(side=tk.RIGHT, padx=6)
 
-        tbs.Button(
+        self.btn_dismiss = tbs.Button(
             btn_frame,
             text="❌  Dismiss",
-            bootstyle="secondary-outline",
+            bootstyle="secondary",
             command=self.destroy
-        ).pack(side=tk.RIGHT, padx=6)
+        )
+        self.btn_dismiss.pack(side=tk.RIGHT, padx=6)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 1: OLD VS NEW DIFF BUILDER
@@ -406,33 +424,75 @@ class DryRunReviewDialog(tbs.Toplevel):
         workspace_frame.pack(fill=tk.BOTH, expand=True)
 
         # Left Side: Questions List
-        left_frame = tbs.LabelFrame(workspace_frame, text=" Parsed Docx Questions ", bootstyle="info", width=340, padding=8)
+        left_frame = tbs.LabelFrame(workspace_frame, text=" Questions Manager ", bootstyle="info", width=360, padding=8)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 8))
         left_frame.pack_propagate(False)
 
+        tree_frame = tbs.Frame(left_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
         q_cols = ("num", "snippet", "ans")
         self.q_tree = tbs.Treeview(
-            left_frame, columns=q_cols, show="headings",
+            tree_frame, columns=q_cols, show="headings",
             selectmode="browse", bootstyle="dark"
         )
         self.q_tree.heading("num", text="#")
         self.q_tree.heading("snippet", text="Question Rubric")
         self.q_tree.heading("ans", text="Ans Key")
 
-        self.q_tree.column("num", width=38, anchor=tk.CENTER)
-        self.q_tree.column("snippet", width=230)
+        self.q_tree.column("num", width=36, anchor=tk.CENTER)
+        self.q_tree.column("snippet", width=240)
         self.q_tree.column("ans", width=55, anchor=tk.CENTER)
 
         self.q_tree.tag_configure("valid", foreground="#7fffa0")
         self.q_tree.tag_configure("odd", background="#222222")
         self.q_tree.tag_configure("even", background="#1a1a1a")
 
-        q_scroll = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.q_tree.yview)
+        q_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.q_tree.yview)
         self.q_tree.configure(yscroll=q_scroll.set)
         self.q_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         q_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.q_tree.bind("<<TreeviewSelect>>", self._on_question_selected)
+
+        # Question Action Toolbar
+        tb1 = tbs.Frame(left_frame)
+        tb1.pack(fill=tk.X, pady=(6, 2))
+
+        self.btn_add_q = tbs.Button(
+            tb1,
+            text="➕ Add Question",
+            bootstyle="success-outline",
+            command=self._on_add_question
+        )
+        self.btn_add_q.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        self.btn_del_q = tbs.Button(
+            tb1,
+            text="🗑️ Delete",
+            bootstyle="danger-outline",
+            command=self._on_delete_question
+        )
+        self.btn_del_q.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
+        tb2 = tbs.Frame(left_frame)
+        tb2.pack(fill=tk.X, pady=(2, 0))
+
+        self.btn_paste_import = tbs.Button(
+            tb2,
+            text="📋 Paste Questions",
+            bootstyle="info-outline",
+            command=self._open_paste_importer_modal
+        )
+        self.btn_paste_import.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        self.btn_view_docx_text = tbs.Button(
+            tb2,
+            text="📄 View Docx",
+            bootstyle="secondary-outline",
+            command=self._open_docx_text_viewer
+        )
+        self.btn_view_docx_text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
         # Right Side: Detailed Question Inspector & Editor
         right_frame = tbs.LabelFrame(workspace_frame, text=" Question Inspector & Editor (Make adjustments here) ", bootstyle="primary", padding=12)
@@ -547,6 +607,14 @@ class DryRunReviewDialog(tbs.Toplevel):
             ai_suggestion=self._picker_suggestion,
         )
 
+    def _toggle_ignore_vocab(self):
+        """Allows user to skip/ignore an unvalidated or empty Vocabulary Quiz to proceed with Comprehension."""
+        self._vocab_ignored = not self._vocab_ignored
+        if self._vocab_ignored:
+            self.section_var.set("Comprehension")
+            self._on_section_changed()
+        self._refresh_validation()
+
     def _on_drive_file_chosen(self, selection):
         self.story["selected_drive_file"] = selection
         self._picker_suggestion = None
@@ -555,6 +623,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.comprehension_questions = []
         self.vocab_questions = []
         self.vocab_present = False
+        self._vocab_ignored = False
         self.docx_path = None
         self.btn_apply.config(state=tk.DISABLED)
         self.btn_dry_run_test.config(state=tk.DISABLED)
@@ -646,6 +715,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.comprehension_questions = res["questions"]
         self.vocab_questions = res.get("vocab_questions", [])
         self.vocab_present = res.get("vocab_present", False)
+        self._vocab_ignored = False
         self.section_picker.config(values=("Comprehension", "Vocabulary Quiz") if self.vocab_present else ("Comprehension",))
         if not self.vocab_present:
             self.section_var.set("Comprehension")
@@ -678,7 +748,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         )
 
         self._refresh_validation()
-        self.btn_ai_resolve.config(state=tk.NORMAL if self.section_var.get() == "Comprehension" else tk.DISABLED)
+        self._update_ai_btn_text()
 
         # Check if any question is missing answer key
         missing_keys = [q["num"] for q in self.questions if not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"]]
@@ -699,14 +769,26 @@ class DryRunReviewDialog(tbs.Toplevel):
         # Populate trees
         self._populate_questions_tree()
         self._populate_diff_tree()
-        if self.vocab_present and (not self.vocab_questions or not DocxParser.validate_questions(self.vocab_questions)["is_valid"]):
+        if self.vocab_present and not self._vocab_ignored and (not self.vocab_questions or not DocxParser.validate_questions(self.vocab_questions)["is_valid"]):
             self.section_var.set("Vocabulary Quiz")
             self._on_section_changed()
-            self.lbl_status.config(text="Vocabulary Quiz needs correction before this story can be applied.", bootstyle="warning")
+            self.lbl_status.config(text="Vocabulary Quiz needs correction before this story can be applied (or click 'Ignore Vocabulary Quiz').", bootstyle="warning")
 
         # Automatically start fetching Readora state if not yet fetched
         if self.old_state is None:
             self._fetch_readora_state_async()
+
+    def _update_ai_btn_text(self):
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        if not self.docx_path:
+            self.btn_ai_resolve.config(state=tk.DISABLED, text="⚡ AI Resolve Keys (Groq)")
+        elif is_vocab:
+            if not self.questions:
+                self.btn_ai_resolve.config(state=tk.NORMAL, text="⚡ AI Extract Vocab (Groq)")
+            else:
+                self.btn_ai_resolve.config(state=tk.NORMAL, text="⚡ AI Resolve Keys (Groq)")
+        else:
+            self.btn_ai_resolve.config(state=tk.NORMAL, text="⚡ AI Resolve Keys (Groq)")
 
     def _on_section_changed(self, _event=None):
         is_vocab = self.section_var.get() == "Vocabulary Quiz"
@@ -714,7 +796,7 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.old_state = self.old_vocab_state if is_vocab else self.old_comprehension_state
         self.selected_q_idx = 0
         self.selected_diff_idx = 0
-        self.btn_ai_resolve.config(state=tk.DISABLED if is_vocab or not self.docx_path else tk.NORMAL)
+        self._update_ai_btn_text()
         self.lbl_old_badge.config(text=f"Readora: {len((self.old_state or {}).get('questions', []))} {self.section_var.get()} questions")
         self.lbl_old_summary.config(text=f"{self.section_var.get()}: {len((self.old_state or {}).get('questions', []))} existing questions")
         self.lbl_new_summary.config(text=f"{self.section_var.get()}: {len(self.questions)} incoming questions")
@@ -735,18 +817,45 @@ class DryRunReviewDialog(tbs.Toplevel):
     def _refresh_validation(self):
         comp = DocxParser.validate_questions(self.comprehension_questions)
         vocab = DocxParser.validate_questions(self.vocab_questions)
-        valid = bool(self.comprehension_questions) and comp["is_valid"] and (not self.vocab_present or (bool(self.vocab_questions) and vocab["is_valid"]))
+        vocab_active = self.vocab_present and not self._vocab_ignored
+        is_vocab_blocking = vocab_active and (not self.vocab_questions or not vocab["is_valid"])
+        valid = bool(self.comprehension_questions) and comp["is_valid"] and not is_vocab_blocking
         state = tk.NORMAL if valid and not self.is_executing else tk.DISABLED
         self.btn_apply.config(state=state)
         self.btn_dry_run_test.config(state=state)
-        if self.vocab_present and (not self.vocab_questions or not vocab["is_valid"]):
-            self.lbl_vocab_status.config(text="Vocabulary: needs correction", bootstyle="warning")
-        elif self.vocab_present:
-            self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} ready", bootstyle="success")
+
+        if self.vocab_present:
+            self.btn_toggle_vocab.pack(side=tk.LEFT, padx=6)
+            if self._vocab_ignored:
+                self.btn_toggle_vocab.config(text="Include Vocabulary Quiz", bootstyle="info-outline")
+                self.lbl_vocab_status.config(text="Vocabulary: ignored by user", bootstyle="secondary")
+                self.lbl_btn_hint.config(text="")
+            elif not self.vocab_questions or not vocab["is_valid"]:
+                self.btn_toggle_vocab.config(text="Ignore Vocabulary Quiz", bootstyle="warning-outline")
+                self.lbl_vocab_status.config(text="Vocabulary: needs correction", bootstyle="warning")
+                self.lbl_btn_hint.config(text="⚠️ Apply/Dry-Run locked: Vocab Quiz has issues. Click 'Ignore Vocabulary Quiz' to bypass.")
+            else:
+                self.btn_toggle_vocab.config(text="Ignore Vocabulary Quiz", bootstyle="secondary-outline")
+                self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} ready", bootstyle="success")
+                self.lbl_btn_hint.config(text="")
+        else:
+            self.btn_toggle_vocab.pack_forget()
+            self.lbl_vocab_status.config(text="Vocabulary: skipped (section absent)", bootstyle="secondary")
+            if not bool(self.comprehension_questions):
+                self.lbl_btn_hint.config(text="⚠️ Apply/Dry-Run locked: No comprehension questions found.")
+            elif not comp["is_valid"]:
+                issues = "; ".join(comp.get("issues", []))
+                self.lbl_btn_hint.config(text=f"⚠️ Apply/Dry-Run locked: Comprehension issues ({issues})")
+            else:
+                self.lbl_btn_hint.config(text="")
 
     def _on_ai_resolve_answers(self):
-        """Uses Groq AI to detect freeform answer keys or styling-based answers (highlights, underlines, etc.)."""
-        if not self.questions or not self.docx_path:
+        """Uses Groq AI to detect freeform answer keys, styling-based answers, or extract vocab questions."""
+        if not self.docx_path:
+            return
+
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        if not self.questions and not is_vocab:
             return
 
         api_key = GroqAnswerResolver.get_api_key(self.config)
@@ -762,49 +871,83 @@ class DryRunReviewDialog(tbs.Toplevel):
             self.config["groq_api_key"] = api_key
             save_config(self.config)
 
-        self.btn_ai_resolve.config(state=tk.DISABLED, text="⚡ Resolving...")
-        self.lbl_status.config(text="🤖 Groq AI analyzing document for freeform answer keys and styling annotations...", bootstyle="warning")
+        self.btn_ai_resolve.config(state=tk.DISABLED, text="⚡ Working...")
         self.pbar.pack(side=tk.RIGHT)
         self.pbar.start(10)
 
-        def worker():
-            res = GroqAnswerResolver.resolve_answers_with_groq(
-                self.docx_path,
-                self.questions,
-                self.config
-            )
-            self.safe_after(0, self._on_ai_resolve_completed, res)
+        if is_vocab and not self.questions:
+            self.lbl_status.config(text="🤖 Groq AI extracting vocabulary questions from document...", bootstyle="warning")
+            def worker():
+                res = GroqAnswerResolver.extract_vocab_questions_with_groq(
+                    self.docx_path,
+                    self.config
+                )
+                self.safe_after(0, self._on_ai_resolve_completed, res, True)
+            threading.Thread(target=worker, daemon=True).start()
+        else:
+            self.lbl_status.config(text="🤖 Groq AI analyzing document for freeform answer keys and styling annotations...", bootstyle="warning")
+            def worker():
+                res = GroqAnswerResolver.resolve_answers_with_groq(
+                    self.docx_path,
+                    self.questions,
+                    self.config
+                )
+                self.safe_after(0, self._on_ai_resolve_completed, res, False)
+            threading.Thread(target=worker, daemon=True).start()
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_ai_resolve_completed(self, res: Dict[str, Any]):
+    def _on_ai_resolve_completed(self, res: Dict[str, Any], is_extract: bool = False):
         self.pbar.stop()
         self.pbar.pack_forget()
-        self.btn_ai_resolve.config(state=tk.NORMAL, text="⚡ AI Resolve Keys (Groq)")
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        self._update_ai_btn_text()
 
         if res["success"]:
             self.questions = res["questions"]
-            self.comprehension_questions = self.questions
-            changes_cnt = res.get("changes_count", 0)
+            if is_vocab:
+                self.vocab_questions = self.questions
+                self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Vocabulary Quiz questions")
+                self.lbl_new_summary.config(text=f"Vocabulary Quiz: {len(self.questions)} incoming questions")
+            else:
+                self.comprehension_questions = self.questions
+
             self._populate_questions_tree()
             self._populate_diff_tree()
             self._refresh_validation()
 
-            if changes_cnt > 0:
-                change_details = "\n".join(f"• Q{c['num']}: {c['old_answer'] or 'None'} ➔ {c['new_answer']} ({c['source']})" for c in res.get("changes", []))
-                self.lbl_status.config(text=f"✨ Groq AI resolved {changes_cnt} answer keys from document!", bootstyle="success")
-                messagebox.showinfo(
-                    "AI Answer Key Resolution",
-                    f"Groq AI successfully resolved {changes_cnt} answer key(s) from document context / styling:\n\n{change_details}",
-                    parent=self
-                )
+            if is_extract:
+                cnt = len(self.questions)
+                if cnt > 0:
+                    self.lbl_status.config(text=f"✨ Groq AI extracted {cnt} vocabulary questions!", bootstyle="success")
+                    messagebox.showinfo(
+                        "AI Extraction Complete",
+                        f"Groq AI successfully extracted {cnt} vocabulary question(s) from document.",
+                        parent=self
+                    )
+                else:
+                    self.lbl_status.config(text="⚠️ Groq AI found no vocabulary questions in document.", bootstyle="warning")
+                    messagebox.showinfo(
+                        "AI Extraction",
+                        "Groq AI inspected the document, but found no multiple-choice vocabulary quiz questions.\n"
+                        "If this story does not include a vocabulary quiz, click 'Ignore Vocabulary Quiz' to proceed.",
+                        parent=self
+                    )
             else:
-                self.lbl_status.config(text="✅ Groq AI verified: All answer keys are consistent.", bootstyle="success")
-                messagebox.showinfo(
-                    "AI Verification Complete",
-                    "Groq AI inspected the document styling and footer keys.\nAll existing answer keys are already consistent.",
-                    parent=self
-                )
+                changes_cnt = res.get("changes_count", 0)
+                if changes_cnt > 0:
+                    change_details = "\n".join(f"• Q{c['num']}: {c['old_answer'] or 'None'} ➔ {c['new_answer']} ({c['source']})" for c in res.get("changes", []))
+                    self.lbl_status.config(text=f"✨ Groq AI resolved {changes_cnt} answer keys from document!", bootstyle="success")
+                    messagebox.showinfo(
+                        "AI Answer Key Resolution",
+                        f"Groq AI successfully resolved {changes_cnt} answer key(s) from document context / styling:\n\n{change_details}",
+                        parent=self
+                    )
+                else:
+                    self.lbl_status.config(text="✅ Groq AI verified: All answer keys are consistent.", bootstyle="success")
+                    messagebox.showinfo(
+                        "AI Verification Complete",
+                        "Groq AI inspected the document styling and footer keys.\nAll existing answer keys are already consistent.",
+                        parent=self
+                    )
         else:
             err = res.get("error", "Unknown error")
             self.lbl_status.config(text=f"❌ Groq AI error: {err}", bootstyle="danger")
@@ -813,6 +956,22 @@ class DryRunReviewDialog(tbs.Toplevel):
     # ══════════════════════════════════════════════════════════════════════════
     # DIFF LOGIC & RENDERING
     # ══════════════════════════════════════════════════════════════════════════
+    def _clear_diff_details(self):
+        """Clears both sides of the diff inspection cards when no rows are available."""
+        self.diff_left_card.config(text=" 🔴 Current on Readora Lab ")
+        self.lbl_diff_old_rubric.delete("1.0", tk.END)
+        self.lbl_diff_old_rubric.insert(tk.END, "No questions in this section.")
+        for child in self.diff_old_choices_frame.winfo_children():
+            child.destroy()
+        self.lbl_diff_old_ans.config(text="Answer: --")
+
+        self.diff_right_card.config(text=" 🟢 Incoming from Docx (NEW TO APPLY) ")
+        self.lbl_diff_new_rubric.delete("1.0", tk.END)
+        self.lbl_diff_new_rubric.insert(tk.END, "No questions in this section.")
+        for child in self.diff_new_choices_frame.winfo_children():
+            child.destroy()
+        self.lbl_diff_new_ans.config(text="Answer: --")
+
     def _populate_diff_tree(self):
         for item in self.diff_tree.get_children():
             self.diff_tree.delete(item)
@@ -822,6 +981,7 @@ class DryRunReviewDialog(tbs.Toplevel):
 
         max_rows = max(len(old_questions), len(new_questions))
         if max_rows == 0:
+            self._clear_diff_details()
             return
 
         for i in range(max_rows):
@@ -1041,6 +1201,356 @@ class DryRunReviewDialog(tbs.Toplevel):
         except Exception as e:
             messagebox.showwarning("Open File", f"Could not open file: {e}")
 
+    def _on_add_question(self):
+        """Adds a new blank question to the active section list."""
+        new_num = len(self.questions) + 1
+        new_q = {
+            "num": new_num,
+            "question": f"{new_num}. ",
+            "raw_question": "",
+            "choices": [
+                {"letter": "A", "text": "A. "},
+                {"letter": "B", "text": "B. "},
+                {"letter": "C", "text": "C. "},
+                {"letter": "D", "text": "D. "},
+            ],
+            "answer": "A"
+        }
+        self.questions.append(new_q)
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        if is_vocab:
+            self.vocab_questions = self.questions
+            self.vocab_present = True
+            self._vocab_ignored = False
+            self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} questions", bootstyle="success")
+            self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Vocabulary Quiz questions")
+        else:
+            self.comprehension_questions = self.questions
+            self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Questions")
+
+        self._populate_questions_tree()
+        self._populate_diff_tree()
+        self._refresh_validation()
+
+        idx = len(self.questions) - 1
+        self.q_tree.selection_set(str(idx))
+        self.q_tree.see(str(idx))
+        self.selected_q_idx = idx
+        self._load_question_to_editor(idx)
+        self.txt_q_rubric.focus_set()
+
+    def _on_delete_question(self):
+        """Deletes the currently selected question and re-numbers remaining questions."""
+        if not self.questions or self.selected_q_idx < 0 or self.selected_q_idx >= len(self.questions):
+            return
+
+        del self.questions[self.selected_q_idx]
+        for i, q in enumerate(self.questions):
+            q["num"] = i + 1
+            raw = q.get("raw_question", "")
+            q["question"] = f"{i + 1}. {raw}"
+
+        is_vocab = self.section_var.get() == "Vocabulary Quiz"
+        if is_vocab:
+            self.vocab_questions = self.questions
+            self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} questions", bootstyle="success" if self.vocab_questions else "secondary")
+            self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Vocabulary Quiz questions")
+        else:
+            self.comprehension_questions = self.questions
+            self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Questions")
+
+        self._populate_questions_tree()
+        self._populate_diff_tree()
+        self._refresh_validation()
+
+        if self.questions:
+            new_idx = min(self.selected_q_idx, len(self.questions) - 1)
+            self.selected_q_idx = new_idx
+            self.q_tree.selection_set(str(new_idx))
+            self._load_question_to_editor(new_idx)
+        else:
+            self.selected_q_idx = -1
+            self.txt_q_rubric.delete("1.0", tk.END)
+            for v in self.choice_vars.values():
+                v.set("")
+            self.ans_var.set("A")
+
+    def _open_paste_importer_modal(self):
+        """Opens an interactive modal allowing the user to paste raw questions text, preview, and import."""
+        modal = tbs.Toplevel(self)
+        sec_name = self.section_var.get()
+        modal.title(f"📋 Paste & Import Questions — {sec_name}")
+        modal.geometry("740x630")
+        modal.minsize(620, 500)
+        modal.transient(self)
+        modal.grab_set()
+
+        hdr = tbs.Frame(modal, padding=(14, 10), bootstyle="dark")
+        hdr.pack(fill=tk.X)
+        tbs.Label(
+            hdr,
+            text=f"📋 Quick Import into {sec_name}",
+            font=("Segoe UI", 12, "bold"),
+            bootstyle="inverse-dark"
+        ).pack(side=tk.LEFT)
+
+        body = tbs.Frame(modal, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        tbs.Label(
+            body,
+            text="Paste raw questions text below (copied from Word, Docs, or PDF):\n"
+                 "Standard format: Question rubric on one line, choices (A., B., C., D.) on subsequent lines, with optional 'Answer: A'.",
+            font=("Segoe UI", 9)
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        txt_input = tk.Text(body, height=12, font=("Segoe UI", 10), bg="#1e1e1e", fg="#ffffff", relief=tk.FLAT)
+        txt_input.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        preview_box = tbs.LabelFrame(body, text=" Parsed Questions Preview ", padding=8, bootstyle="info")
+        preview_box.pack(fill=tk.X, pady=(0, 8))
+
+        lbl_preview = tbs.Label(preview_box, text="Paste questions above and click 'Preview Parsed Questions'.", font=("Segoe UI", 9))
+        lbl_preview.pack(anchor=tk.W)
+
+        parsed_holder = {"questions": []}
+
+        def do_parse():
+            raw = txt_input.get("1.0", tk.END).strip()
+            if not raw:
+                lbl_preview.config(text="⚠️ Please paste question text first.", bootstyle="warning")
+                parsed_holder["questions"] = []
+                return
+
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            parsed = DocxParser._parse_questions(lines, require_answer=False)
+            if parsed:
+                parsed_holder["questions"] = parsed
+                missing_ans = sum(1 for q in parsed if not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"])
+                ans_note = f" ({missing_ans} missing answer keys)" if missing_ans > 0 else " (All answer keys identified)"
+                first_preview = parsed[0].get("raw_question", "")[:60]
+                lbl_preview.config(
+                    text=f"✅ Successfully parsed {len(parsed)} question(s){ans_note}!\nFirst: {first_preview}... [Key: {parsed[0].get('answer', '?')}]",
+                    bootstyle="success"
+                )
+            else:
+                parsed_holder["questions"] = []
+                lbl_preview.config(
+                    text="⚠️ Could not parse standard questions from this text. Ensure each question has A., B., C., D. options, or click '⚡ Format with Groq AI'.",
+                    bootstyle="danger"
+                )
+
+        def do_groq_format():
+            raw = txt_input.get("1.0", tk.END).strip()
+            if not raw:
+                messagebox.showwarning("Empty text", "Please paste question text before running AI format.", parent=modal)
+                return
+
+            api_key = GroqAnswerResolver.get_api_key(self.config)
+            if not api_key:
+                messagebox.showerror("Groq Required", "Groq API key is not configured.", parent=modal)
+                return
+
+            lbl_preview.config(text="🤖 Groq AI formatting questions...", bootstyle="warning")
+            modal.update()
+
+            def worker():
+                try:
+                    from groq import Groq
+                    import json
+                    client = Groq(api_key=api_key)
+                    sys_prompt = (
+                        "You are an exam parser. Read the text and extract all multiple-choice questions.\n"
+                        "Return JSON ONLY with this schema: {\"questions\": [{\"num\": 1, \"raw_question\": \"...\", \"choices\": [{\"letter\": \"A\", \"text\": \"A. ...\"}, ...], \"answer\": \"A\"}]}"
+                    )
+                    resp = client.chat.completions.create(
+                        model=(self.config or {}).get("groq_model", "llama-3.3-70b-versatile"),
+                        messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": raw[:7500]}],
+                        response_format={"type": "json_object"},
+                        temperature=0.1
+                    )
+                    content = json.loads(resp.choices[0].message.content)
+                    q_list = content.get("questions", [])
+                    fmt = []
+                    for i, q in enumerate(q_list):
+                        choices = []
+                        for c in q.get("choices", []):
+                            let = str(c.get("letter", "")).upper()
+                            t = str(c.get("text", "")).strip()
+                            clean_t = re.sub(r"^[A-Da-d][\.\)]\s*", "", t).strip()
+                            choices.append({"letter": let, "text": f"{let}. {clean_t}"})
+                        raw_q = q.get("raw_question") or q.get("question", "")
+                        raw_q = re.sub(r"^(?:Q\d+[\.\:]|\d+[\.\:])\s*", "", raw_q).strip()
+                        fmt.append({
+                            "num": i + 1,
+                            "question": f"{i + 1}. {raw_q}",
+                            "raw_question": raw_q,
+                            "choices": choices,
+                            "answer": q.get("answer", "A")
+                        })
+                    self.safe_after(0, lambda: on_groq_done(fmt))
+                except Exception as exc:
+                    self.safe_after(0, lambda: lbl_preview.config(text=f"❌ Groq format failed: {exc}", bootstyle="danger"))
+
+            def on_groq_done(fmt):
+                if fmt:
+                    parsed_holder["questions"] = fmt
+                    lbl_preview.config(
+                        text=f"✨ Groq AI structured {len(fmt)} question(s) successfully!\nFirst: {fmt[0]['raw_question'][:60]}... [Key: {fmt[0]['answer']}]",
+                        bootstyle="success"
+                    )
+                else:
+                    lbl_preview.config(text="⚠️ Groq AI did not find any questions in text.", bootstyle="warning")
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def do_import():
+            if not parsed_holder["questions"]:
+                do_parse()
+            if not parsed_holder["questions"]:
+                messagebox.showerror("No questions", "Could not import: No questions parsed yet.", parent=modal)
+                return
+
+            replace = replace_var.get()
+            imported_q = parsed_holder["questions"]
+            is_vocab = self.section_var.get() == "Vocabulary Quiz"
+
+            if replace:
+                self.questions = imported_q
+            else:
+                start_num = len(self.questions)
+                for i, q in enumerate(imported_q):
+                    q["num"] = start_num + i + 1
+                    raw_q = q.get("raw_question", "")
+                    q["question"] = f"{q['num']}. {raw_q}"
+                self.questions.extend(imported_q)
+
+            if is_vocab:
+                self.vocab_questions = self.questions
+                self.vocab_present = True
+                self._vocab_ignored = False
+                self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} questions", bootstyle="success")
+                self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Vocabulary Quiz questions")
+            else:
+                self.comprehension_questions = self.questions
+                self.lbl_new_badge.config(text=f"Docx: {len(self.questions)} Questions")
+
+            self._populate_questions_tree()
+            self._populate_diff_tree()
+            self._refresh_validation()
+            if self.questions:
+                self.q_tree.selection_set("0")
+                self._load_question_to_editor(0)
+
+            modal.destroy()
+            messagebox.showinfo("Import Successful", f"Imported {len(imported_q)} question(s) into {self.section_var.get()}!", parent=self)
+
+        btn_bar = tbs.Frame(body)
+        btn_bar.pack(fill=tk.X)
+
+        replace_var = tk.BooleanVar(value=True)
+        tbs.Checkbutton(btn_bar, text="Replace existing questions in this section", variable=replace_var, bootstyle="round-toggle").pack(side=tk.LEFT)
+
+        tbs.Button(btn_bar, text="📥 Import to Section", bootstyle="success", command=do_import).pack(side=tk.RIGHT, padx=(4, 0))
+        tbs.Button(btn_bar, text="🔍 Preview", bootstyle="info-outline", command=do_parse).pack(side=tk.RIGHT, padx=4)
+        tbs.Button(btn_bar, text="⚡ Format with Groq AI", bootstyle="warning-outline", command=do_groq_format).pack(side=tk.RIGHT, padx=4)
+
+    def _open_docx_text_viewer(self):
+        """Displays full text from docx so user can view, highlight, and convert paragraphs to questions."""
+        if not self.docx_path or not Path(self.docx_path).exists():
+            messagebox.showwarning("Docx not loaded", "No docx file loaded for this story yet.", parent=self)
+            return
+
+        modal = tbs.Toplevel(self)
+        story_name = self.story.get("story_name", "Story")
+        modal.title(f"📄 Docx Document Text — {story_name}")
+        modal.geometry("740x600")
+        modal.minsize(580, 440)
+        modal.transient(self)
+        modal.grab_set()
+
+        hdr = tbs.Frame(modal, padding=(14, 10), bootstyle="dark")
+        hdr.pack(fill=tk.X)
+        tbs.Label(
+            hdr,
+            text=f"📄 Extracted Document Text — {story_name}",
+            font=("Segoe UI", 12, "bold"),
+            bootstyle="inverse-dark"
+        ).pack(side=tk.LEFT)
+
+        body = tbs.Frame(modal, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        tbs.Label(
+            body,
+            text="You can highlight text below and click 'Convert Selected Text to Question', or copy text into the Importer:",
+            font=("Segoe UI", 9)
+        ).pack(anchor=tk.W, pady=(0, 6))
+
+        txt_frame = tbs.Frame(body)
+        txt_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        txt_view = tk.Text(txt_frame, font=("Segoe UI", 10), bg="#1e1e1e", fg="#ffffff", relief=tk.FLAT)
+        scroll = ttk.Scrollbar(txt_frame, orient=tk.VERTICAL, command=txt_view.yview)
+        txt_view.configure(yscroll=scroll.set)
+        txt_view.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        try:
+            paras = DocxParser.extract_paragraphs(self.docx_path)
+            txt_view.insert(tk.END, "\n\n".join(paras))
+        except Exception as e:
+            txt_view.insert(tk.END, f"Could not read docx: {e}")
+
+        bottom_bar = tbs.Frame(body)
+        bottom_bar.pack(fill=tk.X)
+
+        def convert_selection():
+            try:
+                selected_text = txt_view.selection_get().strip()
+            except Exception:
+                selected_text = ""
+
+            if not selected_text:
+                messagebox.showwarning("No selection", "Please highlight/select question text in the viewer first.", parent=modal)
+                return
+
+            lines = [l.strip() for l in selected_text.splitlines() if l.strip()]
+            parsed = DocxParser._parse_questions(lines, require_answer=False)
+            if parsed:
+                for q in parsed:
+                    new_num = len(self.questions) + 1
+                    q["num"] = new_num
+                    q["question"] = f"{new_num}. {q.get('raw_question', '')}"
+                    self.questions.append(q)
+
+                is_vocab = self.section_var.get() == "Vocabulary Quiz"
+                if is_vocab:
+                    self.vocab_questions = self.questions
+                    self.vocab_present = True
+                    self._vocab_ignored = False
+                    self.lbl_vocab_status.config(text=f"Vocabulary: {len(self.vocab_questions)} questions", bootstyle="success")
+                else:
+                    self.comprehension_questions = self.questions
+
+                self._populate_questions_tree()
+                self._populate_diff_tree()
+                self._refresh_validation()
+                idx = len(self.questions) - 1
+                self.q_tree.selection_set(str(idx))
+                self._load_question_to_editor(idx)
+                modal.destroy()
+                messagebox.showinfo("Converted", f"Added {len(parsed)} question(s) into {self.section_var.get()}!", parent=self)
+            else:
+                messagebox.showerror(
+                    "Parsing failed",
+                    "Could not detect question rubric and choices (A, B, C, D) in the selected text.\nTry using '📋 Paste Questions' instead.",
+                    parent=modal
+                )
+
+        tbs.Button(bottom_bar, text="➕ Convert Selected Text to Question", bootstyle="success", command=convert_selection).pack(side=tk.LEFT)
+        tbs.Button(bottom_bar, text="Close", bootstyle="secondary", command=modal.destroy).pack(side=tk.RIGHT)
+
     # ══════════════════════════════════════════════════════════════════════════
     # ACCEPT & APPLY / DRY RUN TEST ACTIONS
     # ══════════════════════════════════════════════════════════════════════════
@@ -1056,13 +1566,19 @@ class DryRunReviewDialog(tbs.Toplevel):
             return
         num_q = len(self.comprehension_questions)
         old_count = len((self.old_comprehension_state or {}).get("questions", []))
+        vocab_active = self.vocab_present and not self._vocab_ignored
+        vocab_summary = (
+            f"{len(self.vocab_questions)} questions" if vocab_active
+            else "Skipped (ignored by user)" if self._vocab_ignored
+            else "Skipped (section absent)"
+        )
 
         msg = (
             f"Are you ready to write these changes live to Readora Lab?\n\n"
             f"• Story: {story_name}\n"
             f"• Current Questions on Readora (OLD): {old_count}\n"
             f"• Verified Questions to Write (NEW): {num_q}\n"
-            f"• Vocabulary Quiz: {len(self.vocab_questions) if self.vocab_present else 'Skipped (section absent)'}\n"
+            f"• Vocabulary Quiz: {vocab_summary}\n"
             f"• Action: Existing questions will be replaced & answers saved\n\n"
             f"Click 'Yes' to accept and apply immediately."
         )
@@ -1083,7 +1599,7 @@ class DryRunReviewDialog(tbs.Toplevel):
                 self.comprehension_questions,
                 self.config,
                 on_status=lambda s: self.safe_after(0, self._update_status, s),
-                vocab_questions=self.vocab_questions if self.vocab_present else None,
+                vocab_questions=self.vocab_questions if vocab_active else None,
             )
             self.safe_after(0, self._on_apply_completed, res)
 
@@ -1138,13 +1654,15 @@ class DryRunReviewDialog(tbs.Toplevel):
         self.pbar.start(10)
         self.lbl_status.config(text="🧪 Testing dry-run in browser (Safe - no DB writes)...", bootstyle="warning")
 
+        vocab_active = self.vocab_present and not self._vocab_ignored
+
         def worker():
             res = execute_dry_run_test(
                 self.story,
                 self.comprehension_questions,
                 self.config,
                 on_status=lambda s: self.safe_after(0, self._update_status, s),
-                vocab_questions=self.vocab_questions if self.vocab_present else None,
+                vocab_questions=self.vocab_questions if vocab_active else None,
             )
             self.safe_after(0, self._on_dry_run_test_completed, res)
 

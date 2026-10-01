@@ -130,6 +130,21 @@ def prepare_story_review(
                 questions = ai_res["questions"]
                 status_msg = f"{status_msg} (⚡ Groq AI auto-resolved {ai_res.get('changes_count', 0)} answers)"
 
+    # 2.6 Automatic Vocabulary AI Fallback (Groq)
+    if vocab_present and (len(vocab_questions) == 0 or any(not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"] for q in vocab_questions)) and GroqAnswerResolver.is_available() and GroqAnswerResolver.get_api_key(config):
+        if len(vocab_questions) == 0:
+            if on_status:
+                on_status("⚡ AI Auto-Worker: Auto-extracting Vocabulary Quiz via Groq AI...")
+            ai_vocab = GroqAnswerResolver.extract_vocab_questions_with_groq(docx_path, config)
+            if ai_vocab.get("success") and ai_vocab.get("questions"):
+                vocab_questions = ai_vocab["questions"]
+                status_msg = f"{status_msg} (⚡ Groq AI auto-extracted {len(vocab_questions)} vocab questions)"
+        elif any(not q.get("answer") or q.get("answer") not in ["A", "B", "C", "D"] for q in vocab_questions):
+            ai_res = GroqAnswerResolver.resolve_answers_with_groq(docx_path, vocab_questions, config)
+            if ai_res.get("success"):
+                vocab_questions = ai_res["questions"]
+                status_msg = f"{status_msg} (⚡ Groq AI auto-resolved {ai_res.get('changes_count', 0)} vocab answers)"
+
     # 3. Validate questions
     validation = DocxParser.validate_questions(questions)
     vocab_validation = DocxParser.validate_questions(vocab_questions)

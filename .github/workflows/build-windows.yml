@@ -32,6 +32,38 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Restore configuration from secrets
+        env:
+          CONFIG_PY: ${{ secrets.CONFIG_PY }}
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        shell: python
+        run: |
+          import os, shutil
+
+          # Restore config.py
+          cfg_py = os.environ.get('CONFIG_PY')
+          if cfg_py and cfg_py.strip():
+              with open('config.py', 'w', encoding='utf-8') as f:
+                  f.write(cfg_py)
+              print("Successfully restored config.py from secrets.")
+          elif os.path.exists('config.example.py'):
+              shutil.copyfile('config.example.py', 'config.py')
+              print("Notice: CONFIG_PY secret not found; used config.example.py fallback.")
+          else:
+              print("Warning: Neither CONFIG_PY secret nor config.example.py was found.")
+
+          # Restore config.json
+          cfg_json = os.environ.get('CONFIG_JSON')
+          if cfg_json and cfg_json.strip():
+              with open('config.json', 'w', encoding='utf-8') as f:
+                  f.write(cfg_json)
+              print("Successfully restored config.json from secrets.")
+          elif os.path.exists('config.example.json'):
+              shutil.copyfile('config.example.json', 'config.json')
+              print("Notice: CONFIG_JSON secret not found; used config.example.json fallback.")
+          else:
+              print("Warning: Neither CONFIG_JSON secret nor config.example.json was found.")
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -63,7 +95,11 @@ jobs:
           if (!(Test-Path "dist\Mohra\logs")) { New-Item -ItemType Directory -Path "dist\Mohra\logs" }
           if (!(Test-Path "dist\Mohra\cache")) { New-Item -ItemType Directory -Path "dist\Mohra\cache" }
           if (!(Test-Path "dist\Mohra\chrome_profile")) { New-Item -ItemType Directory -Path "dist\Mohra\chrome_profile" }
-          Copy-Item "config.json" -Destination "dist\Mohra\config.json" -Force
+          if (Test-Path "config.json") {
+            Copy-Item "config.json" -Destination "dist\Mohra\config.json" -Force
+          } elseif (Test-Path "config.example.json") {
+            Copy-Item "config.example.json" -Destination "dist\Mohra\config.json" -Force
+          }
 
       - name: Package Standalone ZIP
         run: |

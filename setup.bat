@@ -29,6 +29,9 @@ pip install -r requirements.txt
 echo [4/4] Installing Chromium browser for Playwright...
 playwright install chromium
 
+if not exist "config.py" if exist "config.example.py" copy "config.example.py" "config.py" >nul
+if not exist "config.json" if exist "config.example.json" copy "config.example.json" "config.json" >nul
+
 echo.
 echo ========================================================
 echo   Setup Complete!
